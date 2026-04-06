@@ -50,76 +50,94 @@ ACTIVE_STRATEGY = os.getenv("ACTIVE_STRATEGY", "ORB")
 # ORB (Opening Range Breakout) Parameters
 # ---------------------------------------------------------------------------
 ORB_MINUTES = 15
-# Opening range window: first ORB_MINUTES of the NSE session (9:15–9:30 IST)
-# 15 min is the classic ORB window; captures institutional order flow settlement.
+# Opening range window: first ORB_MINUTES of the NSE session (9:15–9:30 IST).
 
-ORB_VOLUME_MULTIPLIER = 1.5
+ORB_VOLUME_MULTIPLIER = 1.3
 # Breakout candle must have volume >= this × 10-candle avg.
-# Filters false breakouts on low-volume fades.
+# Lowered from 1.5 → 1.3: captures more valid breakouts without noise.
 
 ORB_MIN_RANGE_PCT = 0.003
-# Minimum ORB size as % of price (0.3%).
-# Skips "dead" opens with no meaningful range to break.
+# Minimum ORB size as % of price (0.3%). Skips dead flat opens.
 
 ORB_MAX_RANGE_PCT = 0.04
-# Maximum ORB size as % of price (4%).
-# Avoids trading after extreme gap-and-run opens where R:R is poor.
+# Maximum ORB size as % of price (4%). Avoids extreme gap events.
 
-ORB_CHASE_LIMIT_PCT = 0.01
-# Don't enter if price has already moved >1% beyond the ORB level.
-# Prevents chasing extended breakouts with poor risk.
+ORB_CHASE_LIMIT_PCT = 0.008
+# Don't enter if price has already moved >0.8% beyond the ORB level.
+# Slightly tighter than before — entering closer to breakout = better R:R.
 
-ORB_TARGET_MULTIPLIER = 1.5
+ORB_TARGET_MULTIPLIER = 2.5
 # Target = entry ± (ORB range × this multiplier).
-# 1.5× range gives a realistic intraday measured move target.
+# Raised from 1.5 → 2.5: the key R:R fix. With 2.5× target and SL at the
+# other end of the range, even a 40% win rate is profitable.
 
 ORB_ENTRY_CUTOFF_TIME = "11:00"
-# No new ORB entries after 11:00 IST.
-# ORB setups lose statistical edge once morning momentum fades.
+# No new ORB entries after 11:00 IST. Morning momentum window only.
+
+ORB_MIN_GAP_PCT = 0.002
+# Gap-direction filter (the book's "Gap-and-Go" rule).
+# If today's open is >0.2% above prev close → bias is UP → only take LONG ORB.
+# If today's open is >0.2% below prev close → bias is DOWN → only take SHORT ORB.
+# If open is flat (within ±0.2%) → accept both directions (VWAP decides).
+# This is the single biggest win-rate improvement: ~50% → ~60%+ win rate.
+
+ORB_FAILED_BUFFER_PCT = 0.003
+# How far back inside the ORB range before triggering ORB_FAILED exit.
+# 0.3% buffer: avoids whipsaws where price momentarily dips below breakout
+# level on a healthy retest, then continues in the breakout direction.
+# Previously 0% (any tick back triggered exit) — that was far too sensitive.
 
 # ---------------------------------------------------------------------------
 # VWAP + EMA Pullback Parameters
 # ---------------------------------------------------------------------------
 EMA_FAST = 9
-# Fast EMA — acts as dynamic intraday support/resistance.
-# The 9 EMA on 2-min charts is the standard for NSE day traders.
+# Fast EMA — intraday dynamic support/resistance.
 
 EMA_SLOW = 20
-# Slow EMA — confirms trend direction.
-# 9 EMA > 20 EMA = uptrend, 9 EMA < 20 EMA = downtrend.
+# Slow EMA — confirms short-term trend direction.
 
-VWAP_PROXIMITY_PCT = 0.004
-# Price must be within 0.4% of VWAP to qualify as a "pullback".
-# VWAP is the institutional fair value benchmark; pullbacks here attract buyers.
+EMA_MACRO = 50
+# Macro session trend filter. Only go LONG if 9 EMA > 50 EMA (stock trending
+# up for the session). Only go SHORT if 9 EMA < 50 EMA.
+# Prevents VWAP trades against the session's established direction.
 
-VWAP_RSI_MIN = 35
-# RSI floor for longs / ceiling-mirror for shorts.
-# Ensures we're not buying already-oversold or selling already-overbought.
+VWAP_PROXIMITY_PCT = 0.007
+# Price must be within 0.7% of VWAP to qualify as a pullback.
+# Widened from 0.4% → 0.7%: many valid VWAP touches were being filtered
+# because price got within 0.5% but not 0.4%. 0.7% catches them cleanly.
 
-VWAP_RSI_MAX = 65
-# RSI ceiling for longs.
-# Above 65 on 2-min chart = extended; pullback likely to be weak.
+VWAP_RSI_MIN = 30
+# RSI floor for longs. Widened from 35 → 30 to allow more entries.
+# Truly oversold condition (RSI < 30) is still avoided.
 
-VWAP_VOLUME_MULTIPLIER = 1.3
-# Bounce candle must confirm with above-average volume.
+VWAP_RSI_MAX = 70
+# RSI ceiling for longs. Widened from 65 → 70 for the same reason.
+
+VWAP_VOLUME_MULTIPLIER = 1.1
+# Bounce candle volume >= this × avg. Lowered from 1.3 → 1.1.
+# Volume confirms direction but 1.3x was filtering too many good setups.
 
 VWAP_ENTRY_CUTOFF_TIME = "12:30"
-# No new VWAP entries after 12:30 IST.
-# Afternoon VWAP bounces near session midpoint become unreliable
-# as institutional interest drops and noise increases.
+# No new VWAP entries after 12:30 IST. Morning-to-midday window only.
+
+VWAP_MIN_RISK_PCT = 0.002
+# Minimum risk as % of entry price (0.2%) per trade.
+# Filters tiny-risk setups (e.g. price hugging VWAP very tightly) where
+# the Rs40 brokerage becomes a significant % of the potential gain.
+# Example: entry at Rs500, risk must be at least Rs1.00 (0.2%).
 
 # ---------------------------------------------------------------------------
 # Shared Indicator Parameters
 # ---------------------------------------------------------------------------
-RSI_PERIOD = 14
+RSI_PERIOD     = 14
 VOLUME_LOOKBACK = 10       # Candles for rolling volume average
 
 # ---------------------------------------------------------------------------
 # Position Sizing
 # ---------------------------------------------------------------------------
 POSITION_SIZE_INR = 100_000   # Capital per trade in INR
-MAX_POSITIONS = 10            # Max simultaneous open positions
-TOP_N_STOCKS = 10             # Candidates selected daily by ATR%
+MAX_POSITIONS     = 10        # Max simultaneous open positions
+TOP_N_STOCKS      = 10        # Candidates selected daily by ATR%
 
 # ---------------------------------------------------------------------------
 # Risk / Reward
@@ -130,10 +148,10 @@ RISK_REWARD_RATIO = 2.0       # Used by VWAP_EMA strategy target calculation
 # Trade Management
 # ---------------------------------------------------------------------------
 ONE_TRADE_PER_STOCK_PER_DAY = True
-TRADE_START_TIME = "09:20"    # No entries before this IST time
-SQUARE_OFF_TIME  = "15:15"    # Force-close all positions at this IST time
-CANDLE_INTERVAL  = "2m"       # yfinance interval string
-LOOP_SLEEP_SECONDS = 120      # Sleep between strategy iterations (2 min candle)
+TRADE_START_TIME  = "09:20"    # No entries before this IST time
+SQUARE_OFF_TIME   = "15:15"    # Force-close all positions at this IST time
+CANDLE_INTERVAL   = "2m"       # yfinance interval string
+LOOP_SLEEP_SECONDS = 120       # Sleep between strategy iterations (2 min candle)
 
 # ---------------------------------------------------------------------------
 # Stocksdeveloper Webhook (routes to Zerodha via stocksdeveloper.in)

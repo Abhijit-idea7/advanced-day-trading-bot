@@ -1,55 +1,67 @@
 """
 strategy_orb.py
 ---------------
-Opening Range Breakout (ORB) Strategy.
+Opening Range Breakout (ORB) Strategy — with Gap-Direction Filter.
 
 SOURCE: Andrew Aziz, "Advanced Techniques in Day Trading"
-        Chapter on Opening Range Breakout and Gap-and-Go setups.
+        Chapters on Opening Range Breakout and Gap-and-Go setups.
 
 CONCEPT
 -------
 The first 15 minutes of the NSE session (9:15–9:30 IST) define the
-"opening range" — the high and low set while institutional order flow from
-the pre-market auction resolves. Once this range is established, a breakout
-above the high or breakdown below the low signals that one side has taken
-control for the day. This is one of the highest-probability setups in
-intraday trading because:
-  1. The range reflects genuine supply/demand discovery
-  2. Breakout direction aligns with the day's institutional bias
-  3. The stop-loss (other side of range) is logically grounded
-  4. Volume confirmation filters out false breakouts
+"opening range". A breakout above the high or breakdown below the low,
+confirmed by volume, signals that one side has taken control for the day.
+
+PROFITABILITY IMPROVEMENTS (vs v1)
+------------------------------------
+1. Gap-direction filter (biggest win-rate lift):
+   If a stock gaps UP on open vs prior close → only take LONG ORB breakouts.
+   If a stock gaps DOWN on open vs prior close → only take SHORT ORB breakdowns.
+   Trading WITH the gap direction aligns us with institutional order flow.
+   Counter-gap ORBs (e.g. shorting a gap-up open) have far lower win rates.
+
+2. VWAP alignment check:
+   For LONG breakouts, price at breakout candle must be above VWAP.
+   For SHORT breakdowns, price must be below VWAP.
+   VWAP is the session's fair-value anchor — entering on the correct side
+   of it adds an extra layer of confirmation.
+
+3. Higher target multiplier (2.5× instead of 1.5×):
+   Better R:R. With SL at the full range and target at 2.5× range,
+   a 40% win rate still produces net profit after brokerage.
+
+4. ORB_FAILED exit buffer (0.3%):
+   Prevents whipsaw exits when price briefly dips back below the breakout
+   level on a healthy retest then continues in the breakout direction.
 
 ENTRY RULES — LONG (mirror for SHORT)
 --------------------------------------
   1. ORB period has ended (>= 9:30 IST)
-  2. Close > ORB High (price has broken out of the range)
-  3. Extension check: close has NOT moved >1% beyond ORB high (no chasing)
-  4. ORB range is meaningful: between 0.3% and 4% of price
-  5. Volume on breakout candle >= 1.5× 10-candle average
-  6. Before ORB_ENTRY_CUTOFF_TIME (11:00 IST)
-     — ORBs that haven't fired by 11 AM are stale and unreliable
+  2. Gap-direction: today's open gapped UP vs prior close (>= ORB_MIN_GAP_PCT)
+     — OR — open is flat (±ORB_MIN_GAP_PCT) and VWAP alignment confirms
+  3. Close > ORB High (price has broken out above the opening range)
+  4. Extension check: close has NOT moved >0.8% beyond ORB high (no chasing)
+  5. VWAP alignment: close > VWAP at time of breakout (above fair value)
+  6. Volume on breakout candle >= 1.3× 10-candle average
+  7. ORB range is meaningful: between 0.3% and 4% of price
+  8. Before ORB_ENTRY_CUTOFF_TIME (11:00 IST)
 
-STOP LOSS
----------
-  LONG:  ORB Low  (the full range is the risk; if price re-enters range, thesis failed)
-  SHORT: ORB High
+STOP LOSS   LONG: ORB Low  |  SHORT: ORB High
+TARGET      LONG: Entry + (ORB range × 2.5)  |  SHORT: mirror
 
-TARGET
-------
-  LONG:  Entry + (ORB range × ORB_TARGET_MULTIPLIER)  [default 1.5× range]
-  SHORT: Entry - (ORB range × ORB_TARGET_MULTIPLIER)
-
-EXIT SIGNALS (in addition to SL/Target)
------------------------------------------
-  ORB_FAILED: Price closes back inside the ORB (false breakout confirmed).
-              This early exit preserves capital vs waiting for SL.
+EXIT SIGNALS
+------------
+  TARGET     : Price hits the calculated target
+  STOP_LOSS  : Price hits ORB Low (LONG) or ORB High (SHORT)
+  ORB_FAILED : Price closes more than ORB_FAILED_BUFFER_PCT (0.3%) back
+               inside the opening range — confirmed false breakout
 
 INDIA-SPECIFIC NOTES
 --------------------
   - NSE pre-open auction runs 9:00–9:15; continuous session starts 9:15 IST
-  - The first 15-min range on NSE captures the post-auction price discovery
-  - Works particularly well on F&O-eligible high-beta stocks (Nifty50, BankNifty components)
-  - On event days (RBI policy, Budget, earnings), widen ORB_MAX_RANGE_PCT or skip
+  - The gap filter works especially well on F&O stocks where overnight
+    futures positioning creates strong directional gaps
+  - Avoid ORB on stocks with circuit breakers hit — gaps can be misleading
 """
 
 import logging
@@ -61,15 +73,19 @@ import pytz
 from config import (
     ORB_CHASE_LIMIT_PCT,
     ORB_ENTRY_CUTOFF_TIME,
+    ORB_FAILED_BUFFER_PCT,
     ORB_MAX_RANGE_PCT,
+    ORB_MIN_GAP_PCT,
     ORB_MIN_RANGE_PCT,
     ORB_TARGET_MULTIPLIER,
     ORB_VOLUME_MULTIPLIER,
 )
 from indicators import (
+    DAY_OPEN_COL,
     ORB_ESTABLISHED_COL,
     ORB_HIGH_COL,
     ORB_LOW_COL,
+    PREV_DAY_CLOSE_COL,
     VOLAVG_COL,
     VWAP_COL,
 )
@@ -88,13 +104,10 @@ def generate_signal(df: pd.DataFrame, symbol: str = "", sim_time=None) -> dict:
     iloc[-1] = currently forming candle (incomplete — never use for signals)
     iloc[-2] = last fully closed candle  ← signal candle
 
-    sim_time: pass the candle timestamp during backtesting so the cutoff
-              check uses simulated time, not the real wall-clock time.
-              If None (live mode), falls back to datetime.now(IST).
+    sim_time: candle timestamp for backtesting (avoids datetime.now() in backtest).
     """
     # Entry cutoff gate
     now_ist = sim_time if sim_time is not None else datetime.now(IST)
-    # Ensure timezone-aware (pandas Timestamps from backtest already are)
     if hasattr(now_ist, "tzinfo") and now_ist.tzinfo is None:
         now_ist = IST.localize(now_ist)
     h, m = map(int, ORB_ENTRY_CUTOFF_TIME.split(":"))
@@ -104,7 +117,7 @@ def generate_signal(df: pd.DataFrame, symbol: str = "", sim_time=None) -> dict:
     if len(df) < 3:
         return _HOLD
 
-    row = df.iloc[-2]   # last completed candle
+    row = df.iloc[-2]   # last completed candle (signal candle)
 
     # Guard: ORB must be established (past the 15-min window)
     if not bool(row.get(ORB_ESTABLISHED_COL, False)):
@@ -125,25 +138,47 @@ def generate_signal(df: pd.DataFrame, symbol: str = "", sim_time=None) -> dict:
     close   = float(row["Close"])
     volume  = float(row["Volume"])
     vol_avg = float(row[VOLAVG_COL]) if not pd.isna(row.get(VOLAVG_COL)) else 0.0
+    vwap    = float(row[VWAP_COL])   if not pd.isna(row.get(VWAP_COL))   else 0.0
 
     # ---- Range quality filter ----
     range_pct = orb_range / orb_high
     if range_pct < ORB_MIN_RANGE_PCT:
-        logger.info(f"{symbol} ORB: range too narrow ({range_pct:.2%}) — skipping flat open")
+        logger.info(f"{symbol} ORB: range too narrow ({range_pct:.2%}) — flat open, skipping")
         return _HOLD
     if range_pct > ORB_MAX_RANGE_PCT:
-        logger.info(f"{symbol} ORB: range too wide ({range_pct:.2%}) — skipping gap event")
+        logger.info(f"{symbol} ORB: range too wide ({range_pct:.2%}) — gap event, skipping")
         return _HOLD
 
     vol_ratio = (volume / vol_avg) if vol_avg > 0 else 0.0
 
+    # ---- Gap-direction filter  (the book's "Gap-and-Go" rule) ----
+    # Determine today's directional bias from the gap vs prior close.
+    prev_close = row.get(PREV_DAY_CLOSE_COL)
+    day_open   = row.get(DAY_OPEN_COL)
+
+    gap_pct = 0.0
+    if not pd.isna(prev_close) and not pd.isna(day_open) and float(prev_close) > 0:
+        gap_pct = (float(day_open) - float(prev_close)) / float(prev_close)
+
+    # gap_pct > +ORB_MIN_GAP_PCT  → gapped UP  → bullish bias → LONG only
+    # gap_pct < -ORB_MIN_GAP_PCT  → gapped DOWN → bearish bias → SHORT only
+    # within ±ORB_MIN_GAP_PCT     → flat open   → both directions (VWAP decides)
+    gap_up   = gap_pct >= ORB_MIN_GAP_PCT
+    gap_down = gap_pct <= -ORB_MIN_GAP_PCT
+    flat_open = not gap_up and not gap_down
+
     logger.info(
         f"{symbol} ORB: close={close:.2f} orb=[{orb_low:.2f}–{orb_high:.2f}] "
-        f"range={range_pct:.2%} vol={vol_ratio:.2f}x"
+        f"range={range_pct:.2%} gap={gap_pct:+.2%} vol={vol_ratio:.2f}x vwap={vwap:.2f}"
     )
 
     # ---- LONG: breakout above ORB high ----
     if close > orb_high:
+        # Direction filter: must match gap bias (or flat open with VWAP above)
+        if gap_down:
+            logger.info(f"{symbol} ORB: LONG rejected — stock gapped down ({gap_pct:+.2%}), no counter-gap longs")
+            return _HOLD
+
         extension = (close - orb_high) / orb_high
         if extension > ORB_CHASE_LIMIT_PCT:
             logger.info(f"{symbol} ORB: LONG rejected — chasing {extension:.2%} above ORB high")
@@ -151,21 +186,31 @@ def generate_signal(df: pd.DataFrame, symbol: str = "", sim_time=None) -> dict:
         if vol_ratio < ORB_VOLUME_MULTIPLIER:
             logger.info(f"{symbol} ORB: LONG rejected — weak volume {vol_ratio:.2f}x")
             return _HOLD
+        # VWAP alignment: price should be above VWAP at breakout
+        if vwap > 0 and close < vwap:
+            logger.info(f"{symbol} ORB: LONG rejected — close {close:.2f} below VWAP {vwap:.2f}")
+            return _HOLD
 
-        sl     = orb_low
-        risk   = close - sl
+        sl   = orb_low
+        risk = close - sl
         if risk <= 0:
             return _HOLD
         target = close + (orb_range * ORB_TARGET_MULTIPLIER)
+        rr     = (target - close) / risk
         logger.info(
             f"{symbol} ORB: *** BUY SIGNAL *** "
             f"entry={close:.2f} sl={sl:.2f} target={target:.2f} "
-            f"risk=₹{risk:.2f} vol={vol_ratio:.2f}x"
+            f"R:R={rr:.1f} risk=Rs{risk:.2f} vol={vol_ratio:.2f}x gap={gap_pct:+.2%}"
         )
         return {"action": "BUY", "sl": sl, "target": target, "strategy": STRATEGY_NAME}
 
     # ---- SHORT: breakdown below ORB low ----
     if close < orb_low:
+        # Direction filter: must match gap bias (or flat open with VWAP below)
+        if gap_up:
+            logger.info(f"{symbol} ORB: SHORT rejected — stock gapped up ({gap_pct:+.2%}), no counter-gap shorts")
+            return _HOLD
+
         extension = (orb_low - close) / orb_low
         if extension > ORB_CHASE_LIMIT_PCT:
             logger.info(f"{symbol} ORB: SHORT rejected — chasing {extension:.2%} below ORB low")
@@ -173,16 +218,21 @@ def generate_signal(df: pd.DataFrame, symbol: str = "", sim_time=None) -> dict:
         if vol_ratio < ORB_VOLUME_MULTIPLIER:
             logger.info(f"{symbol} ORB: SHORT rejected — weak volume {vol_ratio:.2f}x")
             return _HOLD
+        # VWAP alignment: price should be below VWAP at breakdown
+        if vwap > 0 and close > vwap:
+            logger.info(f"{symbol} ORB: SHORT rejected — close {close:.2f} above VWAP {vwap:.2f}")
+            return _HOLD
 
-        sl     = orb_high
-        risk   = sl - close
+        sl   = orb_high
+        risk = sl - close
         if risk <= 0:
             return _HOLD
         target = close - (orb_range * ORB_TARGET_MULTIPLIER)
+        rr     = (close - target) / risk
         logger.info(
             f"{symbol} ORB: *** SELL SIGNAL *** "
             f"entry={close:.2f} sl={sl:.2f} target={target:.2f} "
-            f"risk=₹{risk:.2f} vol={vol_ratio:.2f}x"
+            f"R:R={rr:.1f} risk=Rs{risk:.2f} vol={vol_ratio:.2f}x gap={gap_pct:+.2%}"
         )
         return {"action": "SELL", "sl": sl, "target": target, "strategy": STRATEGY_NAME}
 
@@ -193,16 +243,12 @@ def check_exit_signal(df: pd.DataFrame, position: dict) -> str | None:
     """
     Exit conditions for an open ORB position.
 
-    Priority order:
+    Priority:
       1. Target hit
       2. Stop-loss hit
-      3. Failed breakout — price closes back inside the opening range
-
-    A failed breakout exit is unique to ORB: if the breakout reverses
-    and price re-enters the range, the trade thesis is invalid. Exiting
-    early here protects capital rather than waiting for the full SL.
-
-    Uses iloc[-2] (last completed candle) for consistency.
+      3. ORB_FAILED — price closes back INSIDE the range by more than the
+         ORB_FAILED_BUFFER_PCT buffer. The buffer prevents whipsaw exits
+         on shallow retests of the breakout level that then continue higher.
     """
     if len(df) < 2:
         return None
@@ -221,16 +267,17 @@ def check_exit_signal(df: pd.DataFrame, position: dict) -> str | None:
             return "TARGET"
         if close <= sl:
             return "STOP_LOSS"
-        # Failed breakout: price re-enters the ORB
-        if orb_high is not None and close < orb_high:
+        # Failed breakout: price closes significantly back inside the ORB.
+        # Buffer prevents exiting on a normal retest of the breakout level.
+        if orb_high is not None and close < orb_high * (1 - ORB_FAILED_BUFFER_PCT):
             return "ORB_FAILED"
     else:  # SELL
         if close <= target:
             return "TARGET"
         if close >= sl:
             return "STOP_LOSS"
-        # Failed breakdown: price re-enters the ORB
-        if orb_low is not None and close > orb_low:
+        # Failed breakdown: price recovers significantly back inside the ORB.
+        if orb_low is not None and close > orb_low * (1 + ORB_FAILED_BUFFER_PCT):
             return "ORB_FAILED"
 
     return None

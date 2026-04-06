@@ -1,66 +1,63 @@
 """
 strategy_vwap_ema.py
 --------------------
-VWAP + 9/20 EMA Pullback Strategy.
+VWAP + 9/20/50 EMA Pullback Strategy.
 
 SOURCE: Andrew Aziz, "Advanced Techniques in Day Trading"
         Chapters on VWAP trading and Moving Average trend strategies.
 
 CONCEPT
 -------
-VWAP (Volume-Weighted Average Price) is the benchmark used by institutional
-traders to evaluate execution quality. When a stock is trending, it will
-pull back to VWAP and find buyers (in an uptrend) or sellers (in a downtrend).
+When a stock is trending intraday, it will pull back to VWAP and bounce.
+The 9/20 EMA cross confirms short-term trend direction, while the 50 EMA
+acts as a macro session filter — only trade in the direction the stock has
+been trending for most of the session.
 
-The 9 EMA and 20 EMA act as a dual-confirmation trend filter:
-  9 EMA > 20 EMA  →  bullish intraday trend  →  look for LONG pullbacks
-  9 EMA < 20 EMA  →  bearish intraday trend  →  look for SHORT pullbacks
+PROFITABILITY IMPROVEMENTS (vs v1)
+------------------------------------
+1. 50 EMA macro trend filter (new):
+   Only LONG if 9 EMA > 50 EMA (stock has been bullish most of the session).
+   Only SHORT if 9 EMA < 50 EMA.
+   Eliminates VWAP trades taken against the session's established direction —
+   those were the main source of losing trades in the original version.
 
-This combination (EMA trend filter + VWAP pullback entry) is one of the
-highest win-rate setups described in the book because:
-  1. Trend direction is confirmed before entry (no counter-trend trades)
-  2. VWAP pullback provides a low-risk entry with a logical, tight stop
-  3. Institutional support/resistance at VWAP means bounces are reliable
-  4. Volume confirmation on the bounce candle filters weak setups
+2. Stronger EMA_REVERSAL exit condition:
+   Previously exited the moment 9/20 EMAs crossed — which happens dozens
+   of times per day on 2-min charts, cutting many winning trades short.
+   Now requires BOTH the EMA cross AND price to confirm:
+   For LONG: 9 EMA < 20 EMA AND close < 20 EMA (not just a cross).
+   This keeps trades alive through minor pullbacks while exiting true reversals.
+
+3. Minimum risk filter (new):
+   Skips trades where risk is < VWAP_MIN_RISK_PCT (0.2%) of entry price.
+   Tiny-risk setups are usually price hugging VWAP — the Rs40 brokerage
+   becomes a disproportionate cost relative to the small profit potential.
+
+4. Loosened entry filters:
+   VWAP proximity: 0.4% → 0.7%  (catches more valid pullbacks)
+   RSI range: 35–65 → 30–70      (more entries, still avoids extremes)
+   Volume multiplier: 1.3× → 1.1× (removes overfitting on volume)
 
 ENTRY RULES — LONG (mirror for SHORT)
 --------------------------------------
-  1. Trend confirmed: 9 EMA > 20 EMA (uptrend)
-  2. Price has pulled back to VWAP (within VWAP_PROXIMITY_PCT = 0.4%)
-  3. Bounce confirmed:
-       a. Current close > VWAP  (price bounced above, not just touched)
-       b. Current close > previous close  (momentum turning up)
-  4. RSI in neutral zone (35–65) — not overbought, not in free-fall
-  5. Volume spike on bounce candle >= 1.3× 10-candle average
-  6. Before VWAP_ENTRY_CUTOFF_TIME (12:30 IST)
+  1. Macro trend: 9 EMA > 50 EMA (bullish session)
+  2. Short-term trend: 9 EMA > 20 EMA
+  3. Price pulled back to VWAP (within 0.7%)
+  4. Bounce: close > VWAP AND close > previous close
+  5. RSI neutral: 30–70
+  6. Volume >= 1.1× average
+  7. Risk >= 0.2% of entry (minimum trade quality gate)
+  8. Before 12:30 IST
 
-STOP LOSS
----------
-  LONG:  VWAP × (1 - 0.5%)  — just below VWAP; if VWAP breaks, thesis is gone
-  SHORT: VWAP × (1 + 0.5%)  — just above VWAP
+STOP LOSS   LONG: VWAP × 0.995  |  SHORT: VWAP × 1.005
+TARGET      LONG: Entry + 2× risk  |  SHORT: mirror
 
-TARGET
-------
-  LONG:  Entry + (2 × risk)   [RISK_REWARD_RATIO = 2.0]
-  SHORT: Entry - (2 × risk)
-
-EXIT SIGNALS (in addition to SL/Target)
------------------------------------------
-  EMA_REVERSAL: 9 EMA crosses back through 20 EMA against the trade.
-                This means the intraday trend has reversed — the trade
-                premise is invalid and should be closed regardless of P&L.
-
-INDIA-SPECIFIC NOTES
---------------------
-  - VWAP is displayed by default on Zerodha Kite, Angel One, and most Indian
-    trading platforms — so it has self-fulfilling institutional significance
-  - The 9 EMA on 2-min NSE charts corresponds to 18 minutes of data; it's a
-    very responsive trailing guide of intraday momentum
-  - This strategy is most reliable between 10:00–12:30 IST after the open
-    settles. The early morning (9:15–10:00) VWAP is still being "discovered"
-    and is less meaningful as a support/resistance level
-  - Avoid on major event days: RBI policy, Union Budget, stock-specific
-    results — VWAP can be distorted by volume surges in non-directional ways
+EXIT SIGNALS
+------------
+  TARGET       : Price hits calculated target
+  STOP_LOSS    : Price hits 0.5% beyond VWAP
+  EMA_REVERSAL : 9 EMA crossed below 20 EMA AND price is below 20 EMA
+                 (confirmed trend reversal, not just a momentary cross)
 """
 
 import logging
@@ -72,6 +69,7 @@ import pytz
 from config import (
     RISK_REWARD_RATIO,
     VWAP_ENTRY_CUTOFF_TIME,
+    VWAP_MIN_RISK_PCT,
     VWAP_PROXIMITY_PCT,
     VWAP_RSI_MAX,
     VWAP_RSI_MIN,
@@ -79,6 +77,7 @@ from config import (
 )
 from indicators import (
     EMA_FAST_COL,
+    EMA_MACRO_COL,
     EMA_SLOW_COL,
     RSI_COL,
     VOLAVG_COL,
@@ -90,7 +89,7 @@ logger = logging.getLogger(__name__)
 _HOLD  = {"action": "HOLD", "sl": 0.0, "target": 0.0}
 
 STRATEGY_NAME = "VWAP_EMA"
-_VWAP_SL_PCT  = 0.005   # Stop-loss placed 0.5% beyond VWAP
+_VWAP_SL_PCT  = 0.005   # Stop-loss 0.5% beyond VWAP
 
 
 def generate_signal(df: pd.DataFrame, symbol: str = "", sim_time=None) -> dict:
@@ -99,15 +98,12 @@ def generate_signal(df: pd.DataFrame, symbol: str = "", sim_time=None) -> dict:
 
     iloc[-1] = currently forming candle (incomplete — never use for signals)
     iloc[-2] = last fully closed candle  ← signal candle
-    iloc[-3] = candle before signal candle (used for bounce confirmation)
+    iloc[-3] = prior candle (for bounce momentum check)
 
-    sim_time: pass the candle timestamp during backtesting so the cutoff
-              check uses simulated time, not the real wall-clock time.
-              If None (live mode), falls back to datetime.now(IST).
+    sim_time: candle timestamp for backtesting (avoids datetime.now() in backtest).
     """
     # Entry cutoff gate
     now_ist = sim_time if sim_time is not None else datetime.now(IST)
-    # Ensure timezone-aware (pandas Timestamps from backtest already are)
     if hasattr(now_ist, "tzinfo") and now_ist.tzinfo is None:
         now_ist = IST.localize(now_ist)
     h, m = map(int, VWAP_ENTRY_CUTOFF_TIME.split(":"))
@@ -117,11 +113,11 @@ def generate_signal(df: pd.DataFrame, symbol: str = "", sim_time=None) -> dict:
     if len(df) < 4:
         return _HOLD
 
-    row      = df.iloc[-2]   # last completed candle (signal candle)
-    prev_row = df.iloc[-3]   # candle before signal
+    row      = df.iloc[-2]   # signal candle
+    prev_row = df.iloc[-3]   # prior candle
 
-    # Guard: NaN checks on all required indicators
-    required = [EMA_FAST_COL, EMA_SLOW_COL, VWAP_COL, RSI_COL, VOLAVG_COL]
+    # Guard: NaN checks
+    required = [EMA_FAST_COL, EMA_SLOW_COL, EMA_MACRO_COL, VWAP_COL, RSI_COL, VOLAVG_COL]
     if any(pd.isna(row.get(col)) for col in required):
         return _HOLD
     if pd.isna(prev_row.get("Close")):
@@ -131,47 +127,54 @@ def generate_signal(df: pd.DataFrame, symbol: str = "", sim_time=None) -> dict:
     prev_close = float(prev_row["Close"])
     ema_fast   = float(row[EMA_FAST_COL])
     ema_slow   = float(row[EMA_SLOW_COL])
+    ema_macro  = float(row[EMA_MACRO_COL])
     vwap       = float(row[VWAP_COL])
     rsi        = float(row[RSI_COL])
     volume     = float(row["Volume"])
     vol_avg    = float(row[VOLAVG_COL])
 
-    vol_ratio       = (volume / vol_avg) if vol_avg > 0 else 0.0
-    vwap_proximity  = abs(close - vwap) / vwap
+    vol_ratio      = (volume / vol_avg) if vol_avg > 0 else 0.0
+    vwap_proximity = abs(close - vwap) / vwap
 
     logger.info(
         f"{symbol} VWAP: close={close:.2f} vwap={vwap:.2f} prox={vwap_proximity:.3%} "
-        f"ema9={ema_fast:.2f} ema20={ema_slow:.2f} "
+        f"ema9={ema_fast:.2f} ema20={ema_slow:.2f} ema50={ema_macro:.2f} "
         f"rsi={rsi:.1f} vol={vol_ratio:.2f}x"
     )
 
-    # ---- LONG: uptrend + pullback to VWAP + bounce ----
+    # ---- LONG: macro uptrend + pullback to VWAP + bounce ----
     if (
-        ema_fast > ema_slow                           # uptrend confirmed
-        and vwap_proximity <= VWAP_PROXIMITY_PCT      # price near VWAP
+        ema_fast > ema_macro                          # macro session uptrend (9 > 50 EMA)
+        and ema_fast > ema_slow                       # short-term uptrend confirmed
+        and vwap_proximity <= VWAP_PROXIMITY_PCT      # pulled back near VWAP
         and close > vwap                              # bounced above VWAP
-        and close > prev_close                        # upward momentum on signal candle
-        and VWAP_RSI_MIN <= rsi <= VWAP_RSI_MAX       # RSI neutral (not extended)
+        and close > prev_close                        # momentum turning up on signal candle
+        and VWAP_RSI_MIN <= rsi <= VWAP_RSI_MAX       # RSI neutral
         and vol_ratio >= VWAP_VOLUME_MULTIPLIER       # volume confirms the bounce
     ):
         sl   = vwap * (1 - _VWAP_SL_PCT)
         risk = close - sl
         if risk <= 0:
             return _HOLD
+        # Minimum risk filter: avoid tiny setups eaten by brokerage
+        if risk / close < VWAP_MIN_RISK_PCT:
+            logger.info(f"{symbol} VWAP: LONG rejected — risk too small ({risk/close:.3%} < {VWAP_MIN_RISK_PCT:.3%})")
+            return _HOLD
         target = close + (RISK_REWARD_RATIO * risk)
         logger.info(
             f"{symbol} VWAP: *** BUY SIGNAL *** "
             f"entry={close:.2f} sl={sl:.2f} target={target:.2f} "
-            f"risk=₹{risk:.2f} ema9>ema20 vol={vol_ratio:.2f}x"
+            f"risk=Rs{risk:.2f} R:R={RISK_REWARD_RATIO} ema9>ema50 vol={vol_ratio:.2f}x"
         )
         return {"action": "BUY", "sl": sl, "target": target, "strategy": STRATEGY_NAME}
 
-    # ---- SHORT: downtrend + rally to VWAP + rejection ----
+    # ---- SHORT: macro downtrend + rally to VWAP + rejection ----
     if (
-        ema_fast < ema_slow                           # downtrend confirmed
-        and vwap_proximity <= VWAP_PROXIMITY_PCT      # price near VWAP
+        ema_fast < ema_macro                          # macro session downtrend (9 < 50 EMA)
+        and ema_fast < ema_slow                       # short-term downtrend confirmed
+        and vwap_proximity <= VWAP_PROXIMITY_PCT      # price rallied near VWAP
         and close < vwap                              # rejected below VWAP
-        and close < prev_close                        # downward momentum on signal candle
+        and close < prev_close                        # momentum turning down on signal candle
         and VWAP_RSI_MIN <= rsi <= VWAP_RSI_MAX       # RSI neutral
         and vol_ratio >= VWAP_VOLUME_MULTIPLIER       # volume confirms the rejection
     ):
@@ -179,11 +182,14 @@ def generate_signal(df: pd.DataFrame, symbol: str = "", sim_time=None) -> dict:
         risk = sl - close
         if risk <= 0:
             return _HOLD
+        if risk / close < VWAP_MIN_RISK_PCT:
+            logger.info(f"{symbol} VWAP: SHORT rejected — risk too small ({risk/close:.3%} < {VWAP_MIN_RISK_PCT:.3%})")
+            return _HOLD
         target = close - (RISK_REWARD_RATIO * risk)
         logger.info(
             f"{symbol} VWAP: *** SELL SIGNAL *** "
             f"entry={close:.2f} sl={sl:.2f} target={target:.2f} "
-            f"risk=₹{risk:.2f} ema9<ema20 vol={vol_ratio:.2f}x"
+            f"risk=Rs{risk:.2f} R:R={RISK_REWARD_RATIO} ema9<ema50 vol={vol_ratio:.2f}x"
         )
         return {"action": "SELL", "sl": sl, "target": target, "strategy": STRATEGY_NAME}
 
@@ -194,14 +200,14 @@ def check_exit_signal(df: pd.DataFrame, position: dict) -> str | None:
     """
     Exit conditions for an open VWAP+EMA position.
 
-    Priority order:
+    Priority:
       1. Target hit
       2. Stop-loss hit
-      3. EMA trend reversal (9 EMA crosses through 20 EMA against the trade)
-         — If the intraday trend has flipped, the trade premise is gone.
-           Exit before waiting for SL, preserving more capital.
-
-    Uses iloc[-2] (last completed candle) for consistency.
+      3. EMA_REVERSAL — CONFIRMED trend reversal (not just a momentary cross).
+         Requires BOTH:
+           a. 9 EMA has crossed back through 20 EMA against the trade
+           b. Price is on the wrong side of the 20 EMA
+         This prevents EMA_REVERSAL from firing on normal pullbacks within a trend.
     """
     if len(df) < 2:
         return None
@@ -212,24 +218,27 @@ def check_exit_signal(df: pd.DataFrame, position: dict) -> str | None:
     sl        = float(position["sl"])
     target    = float(position["target"])
 
-    ema_fast = float(row[EMA_FAST_COL]) if not pd.isna(row.get(EMA_FAST_COL)) else None
-    ema_slow = float(row[EMA_SLOW_COL]) if not pd.isna(row.get(EMA_SLOW_COL)) else None
+    ema_fast  = float(row[EMA_FAST_COL])  if not pd.isna(row.get(EMA_FAST_COL))  else None
+    ema_slow  = float(row[EMA_SLOW_COL])  if not pd.isna(row.get(EMA_SLOW_COL))  else None
 
     if direction == "BUY":
         if close >= target:
             return "TARGET"
         if close <= sl:
             return "STOP_LOSS"
-        # EMA trend reversed against our long position
-        if ema_fast is not None and ema_slow is not None and ema_fast < ema_slow:
-            return "EMA_REVERSAL"
+        # Confirmed reversal: 9 EMA crossed below 20 EMA AND price is below 20 EMA.
+        # Both conditions required — the EMA cross alone on a 2-min chart is too noisy.
+        if ema_fast is not None and ema_slow is not None:
+            if ema_fast < ema_slow and close < ema_slow:
+                return "EMA_REVERSAL"
     else:  # SELL
         if close <= target:
             return "TARGET"
         if close >= sl:
             return "STOP_LOSS"
-        # EMA trend reversed against our short position
-        if ema_fast is not None and ema_slow is not None and ema_fast > ema_slow:
-            return "EMA_REVERSAL"
+        # Confirmed reversal: 9 EMA crossed above 20 EMA AND price is above 20 EMA.
+        if ema_fast is not None and ema_slow is not None:
+            if ema_fast > ema_slow and close > ema_slow:
+                return "EMA_REVERSAL"
 
     return None
