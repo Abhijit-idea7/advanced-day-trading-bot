@@ -1,0 +1,57 @@
+name: Backtest Strategy
+
+on:
+  workflow_dispatch:
+    inputs:
+      strategy:
+        description: "Strategy to backtest (ORB / VWAP_EMA / COMBINED)"
+        required: true
+        default: "ORB"
+      days:
+        description: "Number of past trading days (1–59)"
+        required: false
+        default: "30"
+
+jobs:
+  backtest:
+    name: Run Backtest
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    # Backtest fetches data and simulates; 30 min is usually plenty
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Backtest doesn't place real orders — no webhook secrets needed.
+      # STOCKSDEVELOPER_API_KEY is still required by config.py import, so we
+      # pass a dummy value. Backtest never calls order_manager functions.
+      - name: Run backtest
+        env:
+          STOCKSDEVELOPER_API_KEY: "backtest-dummy-key"
+          STOCKSDEVELOPER_ACCOUNT: "backtest"
+          ACTIVE_STRATEGY: ${{ github.event.inputs.strategy }}
+        run: |
+          python backtest.py \
+            --strategy "${{ github.event.inputs.strategy }}" \
+            --days "${{ github.event.inputs.days }}"
+
+      # Upload results CSV as downloadable artifact
+      - name: Upload backtest results
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-${{ github.event.inputs.strategy }}-${{ github.event.inputs.days }}d
+          path: backtest_results.csv
+          retention-days: 30
