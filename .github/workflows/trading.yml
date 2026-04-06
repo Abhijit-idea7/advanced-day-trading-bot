@@ -1,0 +1,77 @@
+name: Intraday Trading Bot
+
+# -----------------------------------------------------------------------
+# Cron fires at 03:15 UTC = 08:45 IST (35 min before trade start).
+# GitHub Actions scheduled runs can be delayed 15–30 min during peak hours.
+# Starting early ensures the runner is live well before 09:20 IST when
+# the Python script begins trading.
+#
+# The bot handles the wait internally:
+#   → polls every 30 seconds until 09:20 IST (TRADE_START_TIME)
+#   → then selects candidates and starts the strategy loop
+#
+# Timeout: 390 minutes covers 08:45 → 15:30 IST with buffer.
+#
+# ACTIVE_STRATEGY can be set as a GitHub Actions secret or env var:
+#   ORB       — Opening Range Breakout (default)
+#   VWAP_EMA  — VWAP + 9/20 EMA Pullback
+#   COMBINED  — Both strategies simultaneously
+# -----------------------------------------------------------------------
+
+on:
+  schedule:
+    - cron: "15 3 * * 1-5"   # Mon–Fri, 08:45 IST
+  workflow_dispatch:           # Manual trigger from GitHub Actions UI
+    inputs:
+      strategy:
+        description: "Active strategy (ORB / VWAP_EMA / COMBINED)"
+        required: false
+        default: "ORB"
+
+jobs:
+  trade:
+    name: Run Trading Bot
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    timeout-minutes: 390
+
+    steps:
+      # 1. Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Set up Python
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # 3. Install dependencies
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # 4. Run the bot
+      #    Secrets stored in: repo Settings → Secrets and variables → Actions
+      #    ACTIVE_STRATEGY can be overridden via workflow_dispatch input
+      - name: Run trading bot
+        env:
+          STOCKSDEVELOPER_API_KEY: ${{ secrets.STOCKSDEVELOPER_API_KEY }}
+          STOCKSDEVELOPER_ACCOUNT: ${{ secrets.STOCKSDEVELOPER_ACCOUNT }}
+          ACTIVE_STRATEGY: ${{ github.event.inputs.strategy || secrets.ACTIVE_STRATEGY || 'ORB' }}
+        run: python main.py
+
+      # 5. Commit performance_log.csv back to repo
+      #    Runs even if the bot exits early (if: always()) so no data is lost.
+      - name: Save performance log to repo
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add performance_log.csv 2>/dev/null || true
+          git diff --staged --quiet && echo "No new trades to commit." || \
+            git commit -m "perf: trading log $(date -u '+%Y-%m-%d')" && git push
