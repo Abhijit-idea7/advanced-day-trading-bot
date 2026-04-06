@@ -1,0 +1,474 @@
+#!/usr/bin/env python3
+"""
+backtest.py
+-----------
+Offline backtest of the multi-strategy intraday bot over the last N trading days.
+
+Usage:
+    python backtest.py                        # ORB, 30 days
+    python backtest.py --strategy VWAP_EMA
+    python backtest.py --strategy COMBINED --days 45
+    python backtest.py --strategy ORB --days 15
+
+How it works:
+  1. Fetches 59 days of 2-min candles from yfinance for all STOCK_UNIVERSE stocks
+     (maximum available; gives EMA/RSI full warmup history)
+  2. Computes all indicators once on the full dataset per symbol
+  3. Simulates the live-bot loop day by day, candle by candle:
+       - Ranks stocks daily by ATR% (same as live bot)
+       - Entries: checks each active strategy's generate_signal()
+       - Exits:   checks check_exit_signal() for the strategy that opened the trade
+       - Respects MAX_POSITIONS simultaneous open positions
+       - Hard square-off at 15:15 IST
+  4. Prints per-day P&L table + overall summary
+  5. Saves all trades to backtest_results.csv (artifact in GitHub Actions)
+
+Note on yfinance data:
+  Yahoo Finance provides up to ~59 days of 2-min candles.
+  We always fetch the full 59d window regardless of --days so EMA/RSI are warmed up.
+"""
+
+import argparse
+import csv
+import logging
+from dataclasses import dataclass
+from datetime import datetime, time
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytz
+import yfinance as yf
+
+from config import (
+    ACTIVE_STRATEGY,
+    MAX_POSITIONS,
+    ONE_TRADE_PER_STOCK_PER_DAY,
+    POSITION_SIZE_INR,
+    STOCK_UNIVERSE,
+    TOP_N_STOCKS,
+)
+from indicators import add_indicators
+from strategy_factory import get_strategies, get_strategy_name
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("backtest")
+
+IST          = pytz.timezone("Asia/Kolkata")
+TRADE_START  = time(9, 20)
+SQUARE_OFF   = time(15, 15)
+BROKERAGE    = 40         # Rs20 × 2 legs per trade (Zerodha intraday)
+OUTPUT_CSV   = Path("backtest_results.csv")
+
+CSV_FIELDS = [
+    "date", "symbol", "strategy", "direction",
+    "entry_time", "exit_time",
+    "entry_price", "exit_price",
+    "quantity", "pnl_inr", "exit_reason",
+]
+
+
+# ---------------------------------------------------------------------------
+# Data structures
+# ---------------------------------------------------------------------------
+@dataclass
+class BtPosition:
+    symbol:        str
+    direction:     str
+    entry_price:   float
+    sl:            float
+    target:        float
+    quantity:      int
+    entry_time:    str
+    strategy_name: str
+
+
+@dataclass
+class BtTrade:
+    date:        str
+    symbol:      str
+    strategy:    str
+    direction:   str
+    entry_time:  str
+    exit_time:   str
+    entry_price: float
+    exit_price:  float
+    quantity:    int
+    pnl_inr:     float
+    exit_reason: str
+
+
+# ---------------------------------------------------------------------------
+# Data fetch
+# ---------------------------------------------------------------------------
+def _ns(symbol: str) -> str:
+    return f"{symbol}.NS"
+
+
+def fetch_with_indicators(symbol: str) -> pd.DataFrame | None:
+    """
+    Fetch ~59 days of 2-min candles, compute all indicators,
+    return a timezone-aware (IST) DataFrame or None on failure.
+    """
+    try:
+        df = yf.Ticker(_ns(symbol)).history(interval="2m", period="59d")
+        if df is None or df.empty:
+            logger.warning(f"{symbol}: no data from yfinance")
+            return None
+
+        df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+        df.index = pd.to_datetime(df.index)
+
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC").tz_convert(IST)
+        else:
+            df.index = df.index.tz_convert(IST)
+
+        if len(df) < 30:
+            logger.warning(f"{symbol}: only {len(df)} candles — too few for warmup")
+            return None
+
+        df = add_indicators(df)
+        logger.info(f"{symbol}: {len(df)} candles with indicators")
+        return df
+
+    except Exception as e:
+        logger.error(f"{symbol}: fetch error — {e}")
+        return None
+
+
+def rank_by_atr(symbol_dfs: dict, date_: datetime.date) -> list[str]:
+    """Rank symbols by ATR% using daily data prior to backtest date."""
+    scores: dict[str, float] = {}
+    for symbol, df in symbol_dfs.items():
+        try:
+            hist = df[df.index.date < date_]
+            if hist.empty:
+                continue
+            daily       = hist["Close"].resample("1D").last().dropna()
+            daily_high  = hist["High"].resample("1D").max().dropna()
+            daily_low   = hist["Low"].resample("1D").min().dropna()
+            daily, daily_high = daily.align(daily_high, join="inner")
+            daily, daily_low  = daily.align(daily_low, join="inner")
+            if len(daily) < 3:
+                continue
+            prev_close = daily.shift(1)
+            tr = pd.concat([
+                daily_high - daily_low,
+                (daily_high - prev_close).abs(),
+                (daily_low  - prev_close).abs(),
+            ], axis=1).max(axis=1)
+            atr     = tr.iloc[-10:].mean()
+            atr_pct = atr / daily.iloc[-1] if daily.iloc[-1] > 0 else 0
+            scores[symbol] = atr_pct
+        except Exception:
+            pass
+
+    if not scores:
+        return list(symbol_dfs.keys())[:TOP_N_STOCKS]
+    return sorted(scores, key=lambda s: scores[s], reverse=True)[:TOP_N_STOCKS]
+
+
+def calculate_quantity(price: float) -> int:
+    return int(POSITION_SIZE_INR // price) if price > 0 else 0
+
+
+# ---------------------------------------------------------------------------
+# Single-day simulation
+# ---------------------------------------------------------------------------
+def simulate_day(
+    date_:      datetime.date,
+    candidates: list[str],
+    symbol_dfs: dict,
+    strategies: list,
+) -> list[BtTrade]:
+    """
+    Simulate a full trading day candle-by-candle across all candidates.
+    Returns a list of BtTrade records for all closed trades that day.
+    """
+    trades: list[BtTrade]         = []
+    open_positions: dict[str, BtPosition] = {}
+    traded_today:   set[str]      = set()
+
+    # Build per-symbol DataFrames for this day
+    day_data: dict[str, pd.DataFrame] = {}
+    for sym in candidates:
+        if sym not in symbol_dfs:
+            continue
+        df     = symbol_dfs[sym]
+        day_df = df[df.index.date == date_].copy()
+        if len(day_df) >= 3:
+            day_data[sym] = day_df
+
+    if not day_data:
+        return trades
+
+    # Unified timeline across all symbols
+    all_times = sorted({ts for df in day_data.values() for ts in df.index})
+
+    def _close_position(symbol: str, exit_px: float, reason: str, ts_str: str):
+        pos = open_positions.pop(symbol)
+        traded_today.add(symbol)
+        pnl = (
+            (exit_px - pos.entry_price) * pos.quantity
+            if pos.direction == "BUY"
+            else (pos.entry_price - exit_px) * pos.quantity
+        )
+        trades.append(BtTrade(
+            date        = date_.isoformat(),
+            symbol      = symbol,
+            strategy    = pos.strategy_name,
+            direction   = pos.direction,
+            entry_time  = pos.entry_time,
+            exit_time   = ts_str,
+            entry_price = pos.entry_price,
+            exit_price  = exit_px,
+            quantity    = pos.quantity,
+            pnl_inr     = round(pnl, 2),
+            exit_reason = reason,
+        ))
+
+    for ts in all_times:
+        ts_time = ts.time()
+        ts_str  = ts.strftime("%H:%M")
+
+        # Hard square-off gate
+        if ts_time >= SQUARE_OFF:
+            for symbol in list(open_positions.keys()):
+                df     = day_data.get(symbol)
+                px     = float(df.loc[ts, "Close"]) if df is not None and ts in df.index else open_positions[symbol].entry_price
+                _close_position(symbol, px, "SQUARE_OFF", ts_str)
+            break
+
+        if ts_time < TRADE_START:
+            continue
+
+        # --- Exit checks ---
+        for symbol in list(open_positions.keys()):
+            df = day_data.get(symbol)
+            if df is None or ts not in df.index:
+                continue
+            pos = open_positions[symbol]
+            # Build a mini-df slice ending at this timestamp for iloc[-2] logic
+            df_slice = df[df.index <= ts]
+            if len(df_slice) < 2:
+                continue
+
+            # Route exit check to the strategy that opened this position
+            strategy_module = next(
+                (s for s in strategies if get_strategy_name(s) == pos.strategy_name),
+                strategies[0],
+            )
+            reason = strategy_module.check_exit_signal(df_slice, pos.__dict__)
+            if reason:
+                exit_px = float(df_slice.iloc[-1]["Close"])
+                _close_position(symbol, exit_px, reason, ts_str)
+
+        # --- Entry checks ---
+        if len(open_positions) < MAX_POSITIONS:
+            for symbol in candidates:
+                if len(open_positions) >= MAX_POSITIONS:
+                    break
+                if symbol in open_positions:
+                    continue
+                if ONE_TRADE_PER_STOCK_PER_DAY and symbol in traded_today:
+                    continue
+
+                df = day_data.get(symbol)
+                if df is None or ts not in df.index:
+                    continue
+
+                df_slice = df[df.index <= ts]
+                if len(df_slice) < 3:
+                    continue
+
+                # Try each strategy
+                for strategy_module in strategies:
+                    signal = strategy_module.generate_signal(df_slice, symbol=symbol)
+                    if signal["action"] not in ("BUY", "SELL"):
+                        continue
+
+                    entry_price = float(df_slice.iloc[-1]["Close"])
+                    quantity    = calculate_quantity(entry_price)
+                    if quantity < 1:
+                        break
+
+                    open_positions[symbol] = BtPosition(
+                        symbol        = symbol,
+                        direction     = signal["action"],
+                        entry_price   = entry_price,
+                        sl            = signal["sl"],
+                        target        = signal["target"],
+                        quantity      = quantity,
+                        entry_time    = ts_str,
+                        strategy_name = get_strategy_name(strategy_module),
+                    )
+                    break   # one signal per symbol per tick
+
+    return trades
+
+
+# ---------------------------------------------------------------------------
+# Reporting
+# ---------------------------------------------------------------------------
+def print_overall_summary(
+    all_trades: list[BtTrade],
+    days_tested: int,
+    strategy_label: str,
+) -> None:
+    sep = "=" * 70
+    print(f"\n{sep}")
+    print(f"  BACKTEST SUMMARY — Strategy: {strategy_label}")
+    print(sep)
+
+    if not all_trades:
+        print("  No trades generated in the backtest period.")
+        print(sep)
+        return
+
+    total     = len(all_trades)
+    gross     = sum(t.pnl_inr for t in all_trades)
+    brokerage = total * BROKERAGE
+    net       = gross - brokerage
+    wins      = [t for t in all_trades if t.pnl_inr > 0]
+    win_rate  = len(wins) / total * 100
+
+    by_reason: dict[str, int] = {}
+    for t in all_trades:
+        by_reason[t.exit_reason] = by_reason.get(t.exit_reason, 0) + 1
+
+    by_strategy: dict[str, list] = {}
+    for t in all_trades:
+        by_strategy.setdefault(t.strategy, []).append(t)
+
+    best  = max(all_trades, key=lambda t: t.pnl_inr)
+    worst = min(all_trades, key=lambda t: t.pnl_inr)
+    avg_per_day = net / days_tested if days_tested else 0
+
+    print(f"  Backtest period  : {days_tested} trading days")
+    print(f"  Universe         : {len(STOCK_UNIVERSE)} stocks (top {TOP_N_STOCKS}/day by ATR%)")
+    print(f"  Capital per trade: Rs{POSITION_SIZE_INR:,.0f} (max {MAX_POSITIONS} simultaneous)")
+    print(sep)
+    print(f"  Total trades     : {total}")
+    print(f"  Win rate         : {len(wins)}/{total} = {win_rate:.1f}%")
+    print(f"  Exit breakdown   : {by_reason}")
+    print(sep)
+
+    # Per-strategy breakdown
+    for strat, strat_trades in by_strategy.items():
+        s_wins = sum(1 for t in strat_trades if t.pnl_inr > 0)
+        s_wr   = s_wins / len(strat_trades) * 100
+        s_pnl  = sum(t.pnl_inr for t in strat_trades)
+        print(f"  [{strat}] trades={len(strat_trades)} wins={s_wins} ({s_wr:.0f}%) gross=Rs{s_pnl:+,.0f}")
+
+    print(sep)
+    print(f"  Gross P&L        : Rs{gross:+,.0f}")
+    print(f"  Brokerage (est.) : -Rs{brokerage:,.0f}  (Rs{BROKERAGE}/trade × {total})")
+    print(f"  Net P&L (est.)   : Rs{net:+,.0f}")
+    print(f"  Avg net/day      : Rs{avg_per_day:+,.0f}")
+    print(sep)
+    print(f"  Best  : {best.symbol} {best.direction} {best.date} Rs{best.pnl_inr:+,.0f} [{best.exit_reason}]")
+    print(f"  Worst : {worst.symbol} {worst.direction} {worst.date} Rs{worst.pnl_inr:+,.0f} [{worst.exit_reason}]")
+    print(sep)
+
+
+def save_to_csv(all_trades: list[BtTrade]) -> None:
+    if not all_trades:
+        return
+    with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        writer.writeheader()
+        for t in all_trades:
+            writer.writerow({
+                "date":        t.date,
+                "symbol":      t.symbol,
+                "strategy":    t.strategy,
+                "direction":   t.direction,
+                "entry_time":  t.entry_time,
+                "exit_time":   t.exit_time,
+                "entry_price": t.entry_price,
+                "exit_price":  t.exit_price,
+                "quantity":    t.quantity,
+                "pnl_inr":     t.pnl_inr,
+                "exit_reason": t.exit_reason,
+            })
+    logger.info(f"Saved {len(all_trades)} trades to {OUTPUT_CSV}")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def run(days: int, strategy_override: str | None = None) -> None:
+    import os
+    if strategy_override:
+        os.environ["ACTIVE_STRATEGY"] = strategy_override
+
+    strategies     = get_strategies()
+    strategy_label = " + ".join(get_strategy_name(s) for s in strategies)
+
+    print(f"\n{'=' * 70}")
+    print(f"  INTRADAY BACKTEST — last {days} trading days")
+    print(f"  Strategy : {strategy_label}")
+    print(f"  Universe : {STOCK_UNIVERSE}")
+    print(f"{'=' * 70}\n")
+
+    # 1. Fetch data + indicators
+    logger.info("Fetching 59-day 2-min data (this may take ~1 minute)...")
+    symbol_dfs: dict[str, pd.DataFrame] = {}
+    for symbol in STOCK_UNIVERSE:
+        df = fetch_with_indicators(symbol)
+        if df is not None:
+            symbol_dfs[symbol] = df
+
+    if not symbol_dfs:
+        logger.error("No data fetched. Exiting.")
+        return
+
+    # 2. Determine trading days
+    all_dates = sorted({d for df in symbol_dfs.values() for d in df.index.date})
+    backtest_dates = all_dates[-days:]
+    logger.info(f"Testing {len(backtest_dates)} days: {backtest_dates[0]} — {backtest_dates[-1]}")
+
+    # 3. Simulate
+    all_trades: list[BtTrade] = []
+    print(f"\n  {'Date':12s}  {'Trades':>6}  {'Wins':>4}  {'Losses':>6}  {'Win%':>5}  {'Gross':>12}  {'Net':>12}")
+    print(f"  {'-' * 78}")
+
+    for date_ in backtest_dates:
+        candidates  = rank_by_atr(symbol_dfs, date_)
+        day_trades  = simulate_day(date_, candidates, symbol_dfs, strategies)
+        all_trades.extend(day_trades)
+
+        if day_trades:
+            g    = sum(t.pnl_inr for t in day_trades)
+            n    = g - BROKERAGE * len(day_trades)
+            wins = sum(1 for t in day_trades if t.pnl_inr > 0)
+            wr   = wins / len(day_trades) * 100
+            print(
+                f"  {str(date_):12s}  {len(day_trades):>6d}  {wins:>4d}  "
+                f"{len(day_trades)-wins:>6d}  {wr:>4.0f}%  "
+                f"Rs{g:>+9,.0f}  Rs{n:>+9,.0f}"
+            )
+        else:
+            print(f"  {str(date_):12s}  {'—':>6}  {'—':>4}  {'—':>6}  {'—':>5}  {'Rs0':>12}  {'Rs0':>12}")
+
+    # 4. Summary + CSV
+    print_overall_summary(all_trades, len(backtest_dates), strategy_label)
+    save_to_csv(all_trades)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Backtest multi-strategy intraday bot")
+    parser.add_argument("--days", type=int, default=30, choices=range(1, 60), metavar="N",
+                        help="Trading days to backtest (1–59, default: 30)")
+    parser.add_argument("--strategy", type=str, default=None,
+                        help="Override ACTIVE_STRATEGY: ORB | VWAP_EMA | COMBINED")
+    args = parser.parse_args()
+    run(args.days, args.strategy)
