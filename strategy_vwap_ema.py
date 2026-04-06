@@ -93,16 +93,23 @@ STRATEGY_NAME = "VWAP_EMA"
 _VWAP_SL_PCT  = 0.005   # Stop-loss placed 0.5% beyond VWAP
 
 
-def generate_signal(df: pd.DataFrame, symbol: str = "") -> dict:
+def generate_signal(df: pd.DataFrame, symbol: str = "", sim_time=None) -> dict:
     """
     Evaluate the last COMPLETED candle (iloc[-2]) for a VWAP+EMA pullback signal.
 
     iloc[-1] = currently forming candle (incomplete — never use for signals)
     iloc[-2] = last fully closed candle  ← signal candle
     iloc[-3] = candle before signal candle (used for bounce confirmation)
+
+    sim_time: pass the candle timestamp during backtesting so the cutoff
+              check uses simulated time, not the real wall-clock time.
+              If None (live mode), falls back to datetime.now(IST).
     """
     # Entry cutoff gate
-    now_ist = datetime.now(IST)
+    now_ist = sim_time if sim_time is not None else datetime.now(IST)
+    # Ensure timezone-aware (pandas Timestamps from backtest already are)
+    if hasattr(now_ist, "tzinfo") and now_ist.tzinfo is None:
+        now_ist = IST.localize(now_ist)
     h, m = map(int, VWAP_ENTRY_CUTOFF_TIME.split(":"))
     if now_ist >= now_ist.replace(hour=h, minute=m, second=0, microsecond=0):
         return _HOLD

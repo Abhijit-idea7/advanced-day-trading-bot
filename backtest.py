@@ -251,13 +251,14 @@ def simulate_day(
             continue
 
         # --- Exit checks ---
+        # Bug fix #3: use df.index < ts (strictly less than) so the currently
+        # forming candle at `ts` is never included — only fully-closed bars.
         for symbol in list(open_positions.keys()):
             df = day_data.get(symbol)
-            if df is None or ts not in df.index:
+            if df is None:
                 continue
             pos = open_positions[symbol]
-            # Build a mini-df slice ending at this timestamp for iloc[-2] logic
-            df_slice = df[df.index <= ts]
+            df_slice = df[df.index < ts]   # strictly less than → only closed candles
             if len(df_slice) < 2:
                 continue
 
@@ -268,10 +269,13 @@ def simulate_day(
             )
             reason = strategy_module.check_exit_signal(df_slice, pos.__dict__)
             if reason:
+                # Bug fix #2: exit price from the signal candle (iloc[-2] in the
+                # slice = last closed bar), consistent with check_exit_signal logic.
                 exit_px = float(df_slice.iloc[-1]["Close"])
                 _close_position(symbol, exit_px, reason, ts_str)
 
         # --- Entry checks ---
+        # Bug fix #3 (entry): same df_slice boundary — strictly less than ts.
         if len(open_positions) < MAX_POSITIONS:
             for symbol in candidates:
                 if len(open_positions) >= MAX_POSITIONS:
@@ -282,23 +286,34 @@ def simulate_day(
                     continue
 
                 df = day_data.get(symbol)
-                if df is None or ts not in df.index:
+                if df is None:
                     continue
 
-                df_slice = df[df.index <= ts]
+                df_slice = df[df.index < ts]   # strictly less than → only closed candles
                 if len(df_slice) < 3:
                     continue
 
-                # Try each strategy
+                # Try each strategy in order — take the first valid signal
                 for strategy_module in strategies:
-                    signal = strategy_module.generate_signal(df_slice, symbol=symbol)
+                    # Bug fix #1: pass sim_time=ts so the cutoff gate inside
+                    # generate_signal() uses the simulated candle time, not
+                    # datetime.now() (which would always be after market hours
+                    # and block every single signal during backtesting).
+                    signal = strategy_module.generate_signal(
+                        df_slice, symbol=symbol, sim_time=ts
+                    )
                     if signal["action"] not in ("BUY", "SELL"):
                         continue
 
+                    # Bug fix #2: entry price from the signal candle (iloc[-2]),
+                    # matching the live bot which also uses iloc[-2] close.
+                    # Previously used iloc[-1] (the forming candle) — wrong.
                     entry_price = float(df_slice.iloc[-1]["Close"])
                     quantity    = calculate_quantity(entry_price)
                     if quantity < 1:
-                        break
+                        continue   # Bug fix #4: was `break` — skipped ALL strategies
+                                   # for this symbol; changed to `continue` so the
+                                   # next strategy is still evaluated.
 
                     open_positions[symbol] = BtPosition(
                         symbol        = symbol,
@@ -310,7 +325,7 @@ def simulate_day(
                         entry_time    = ts_str,
                         strategy_name = get_strategy_name(strategy_module),
                     )
-                    break   # one signal per symbol per tick
+                    break   # one position per symbol per loop tick
 
     return trades
 
