@@ -81,11 +81,18 @@ ORB_MIN_GAP_PCT = 0.002
 # If open is flat (within ±0.2%) → accept both directions (VWAP decides).
 # This is the single biggest win-rate improvement: ~50% → ~60%+ win rate.
 
-ORB_FAILED_BUFFER_PCT = 0.003
+ORB_FAILED_BUFFER_PCT = 0.008
 # How far back inside the ORB range before triggering ORB_FAILED exit.
-# 0.3% buffer: avoids whipsaws where price momentarily dips below breakout
-# level on a healthy retest, then continues in the breakout direction.
-# Previously 0% (any tick back triggered exit) — that was far too sensitive.
+# 0.8% buffer: gives trades room to retest the breakout level without exiting.
+# Widened from 0.3% → 0.8% because backtest showed 90/140 exits (64%) were
+# ORB_FAILED — many of those were valid retests that reversed and continued.
+# A wider buffer keeps the trade alive through shallow retests.
+
+ORB_BREAKEVEN_TRIGGER_R = 0.6
+# Move SL to breakeven (entry price) once the trade has gained 60% of initial risk.
+# Example: entry=100, SL=98 (risk=2). Once High >= 101.20 (entry + 0.6×2),
+# the effective SL is raised to 100 (entry). Locks in a no-loss trade early
+# without requiring the full 2.5× target to be reached first.
 
 # ---------------------------------------------------------------------------
 # VWAP + EMA Pullback Parameters

@@ -71,6 +71,7 @@ import pandas as pd
 import pytz
 
 from config import (
+    ORB_BREAKEVEN_TRIGGER_R,
     ORB_CHASE_LIMIT_PCT,
     ORB_ENTRY_CUTOFF_TIME,
     ORB_FAILED_BUFFER_PCT,
@@ -244,39 +245,71 @@ def check_exit_signal(df: pd.DataFrame, position: dict) -> str | None:
     Exit conditions for an open ORB position.
 
     Priority:
-      1. Target hit
-      2. Stop-loss hit
-      3. ORB_FAILED — price closes back INSIDE the range by more than the
-         ORB_FAILED_BUFFER_PCT buffer. The buffer prevents whipsaw exits
-         on shallow retests of the breakout level that then continue higher.
+      1. Target hit     — uses candle HIGH (BUY) / LOW (SELL) so intrabar
+                          touches of the target are captured, not just closes.
+      2. Stop-loss hit  — uses candle LOW (BUY) / HIGH (SELL) for the same
+                          reason. SL is the *effective* SL, which may be the
+                          original orb_low/orb_high OR entry price (breakeven)
+                          once the trade has moved ORB_BREAKEVEN_TRIGGER_R × risk.
+      3. ORB_FAILED     — uses CLOSE (intentional): a confirmed close back inside
+                          the range is required, not just an intrabar wick.
+                          Buffer is ORB_FAILED_BUFFER_PCT (0.8%) to survive retests.
+
+    Breakeven logic:
+      Once the candle HIGH (BUY) / LOW (SELL) has moved at least
+      ORB_BREAKEVEN_TRIGGER_R (0.6) × initial_risk beyond entry, the effective
+      SL is raised to entry_price — locking in a no-loss trade even if the target
+      is not reached.
     """
     if len(df) < 2:
         return None
 
     row       = df.iloc[-2]
     close     = float(row["Close"])
+    candle_h  = float(row["High"])
+    candle_l  = float(row["Low"])
     direction = position["direction"]
-    sl        = float(position["sl"])
     target    = float(position["target"])
+
+    # Original SL (orb_low for BUY, orb_high for SELL)
+    original_sl    = float(position["sl"])
+    entry_price    = float(position.get("entry_price", original_sl))   # fallback: original SL
+    initial_risk   = abs(entry_price - original_sl)
 
     orb_high = float(row[ORB_HIGH_COL]) if not pd.isna(row.get(ORB_HIGH_COL)) else None
     orb_low  = float(row[ORB_LOW_COL])  if not pd.isna(row.get(ORB_LOW_COL))  else None
 
     if direction == "BUY":
-        if close >= target:
+        # ---- Breakeven: move SL to entry once trade gained 60% of initial risk ----
+        if initial_risk > 0 and candle_h >= entry_price + ORB_BREAKEVEN_TRIGGER_R * initial_risk:
+            effective_sl = max(original_sl, entry_price)   # never lower than original SL
+        else:
+            effective_sl = original_sl
+
+        # 1. Target — intrabar high touched target
+        if candle_h >= target:
             return "TARGET"
-        if close <= sl:
+        # 2. Stop-loss — intrabar low breached effective SL
+        if candle_l <= effective_sl:
             return "STOP_LOSS"
-        # Failed breakout: price closes significantly back inside the ORB.
-        # Buffer prevents exiting on a normal retest of the breakout level.
+        # 3. ORB_FAILED — confirmed close back inside the range (close-based, intentional)
         if orb_high is not None and close < orb_high * (1 - ORB_FAILED_BUFFER_PCT):
             return "ORB_FAILED"
+
     else:  # SELL
-        if close <= target:
+        # ---- Breakeven: move SL to entry once trade gained 60% of initial risk ----
+        if initial_risk > 0 and candle_l <= entry_price - ORB_BREAKEVEN_TRIGGER_R * initial_risk:
+            effective_sl = min(original_sl, entry_price)   # never higher than original SL
+        else:
+            effective_sl = original_sl
+
+        # 1. Target — intrabar low touched target
+        if candle_l <= target:
             return "TARGET"
-        if close >= sl:
+        # 2. Stop-loss — intrabar high breached effective SL
+        if candle_h >= effective_sl:
             return "STOP_LOSS"
-        # Failed breakdown: price recovers significantly back inside the ORB.
+        # 3. ORB_FAILED — confirmed close back inside the range (close-based, intentional)
         if orb_low is not None and close > orb_low * (1 + ORB_FAILED_BUFFER_PCT):
             return "ORB_FAILED"
 

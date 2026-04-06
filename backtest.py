@@ -269,9 +269,18 @@ def simulate_day(
             )
             reason = strategy_module.check_exit_signal(df_slice, pos.__dict__)
             if reason:
-                # Bug fix #2: exit price from the signal candle (iloc[-2] in the
-                # slice = last closed bar), consistent with check_exit_signal logic.
-                exit_px = float(df_slice.iloc[-1]["Close"])
+                # Exit price selection — match the detection method used in
+                # check_exit_signal so simulated P&L reflects real fills:
+                #   TARGET    → filled at the target level (High/Low touched it)
+                #   STOP_LOSS → filled at SL level (Low/High touched it)
+                #   ORB_FAILED / SQUARE_OFF / other → filled at Close
+                sig_candle = df_slice.iloc[-1]   # last closed candle (signal candle)
+                if reason == "TARGET":
+                    exit_px = float(pos.target)
+                elif reason == "STOP_LOSS":
+                    exit_px = float(pos.sl)
+                else:
+                    exit_px = float(sig_candle["Close"])
                 _close_position(symbol, exit_px, reason, ts_str)
 
         # --- Entry checks ---
