@@ -44,7 +44,6 @@ from config import (
     ACTIVE_STRATEGY,
     MAX_POSITIONS,
     ONE_TRADE_PER_STOCK_PER_DAY,
-    ORB_MAX_HOLD_TIME,
     POSITION_SIZE_INR,
     STOCK_UNIVERSE,
     TOP_N_STOCKS,
@@ -65,8 +64,6 @@ logger = logging.getLogger("backtest")
 IST          = pytz.timezone("Asia/Kolkata")
 TRADE_START  = time(9, 20)
 SQUARE_OFF   = time(15, 15)
-_orb_mh      = list(map(int, ORB_MAX_HOLD_TIME.split(":")))
-ORB_MAX_HOLD = time(_orb_mh[0], _orb_mh[1])   # time-based exit for ORB positions
 BROKERAGE    = 40         # Rs20 × 2 legs per trade (Zerodha intraday)
 OUTPUT_CSV   = Path("backtest_results.csv")
 
@@ -264,22 +261,6 @@ def simulate_day(
             df_slice = df[df.index < ts]   # strictly less than → only closed candles
             if len(df_slice) < 2:
                 continue
-
-            # ORB conditional time-based exit: at ORB_MAX_HOLD_TIME (12:30),
-            # exit positions that are currently AT A LOSS — those trades have
-            # missed the morning impulse and will drift lower through lunch.
-            # Profitable positions are left to run; they may still hit target
-            # or will exit via breakeven SL / SQUARE_OFF with a real gain.
-            if pos.strategy_name == "ORB" and ts_time >= ORB_MAX_HOLD:
-                px = float(df_slice.iloc[-1]["Close"])
-                is_losing = (
-                    (pos.direction == "BUY"  and px < pos.entry_price) or
-                    (pos.direction == "SELL" and px > pos.entry_price)
-                )
-                if is_losing:
-                    _close_position(symbol, px, "TIME_EXIT", ts_str)
-                    continue
-                # Position is profitable — let it run to target / breakeven SL
 
             # Route exit check to the strategy that opened this position
             strategy_module = next(

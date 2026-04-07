@@ -31,7 +31,6 @@ from config import (
     LOOP_SLEEP_SECONDS,
     MAX_POSITIONS,
     ONE_TRADE_PER_STOCK_PER_DAY,
-    ORB_MAX_HOLD_TIME,
     SQUARE_OFF_TIME,
     TRADE_START_TIME,
 )
@@ -106,9 +105,6 @@ def fetch_and_prepare(symbol: str):
 # Exit management
 # ---------------------------------------------------------------------------
 
-_orb_mh_live = list(map(int, ORB_MAX_HOLD_TIME.split(":")))
-
-
 def check_exits(
     tracker:      TradeTracker,
     perf:         PerformanceTracker,
@@ -116,48 +112,12 @@ def check_exits(
     strategies:   list,
 ) -> None:
     """Evaluate all open positions and close any that hit their exit condition."""
-    now_ist  = datetime.now(IST)
-    now_time = now_ist.time()
-
     for position in tracker.all_positions():
         symbol = position.symbol
         try:
             df = fetch_and_prepare(symbol)
             if df is None:
                 continue
-
-            # ORB conditional time-based exit: at ORB_MAX_HOLD_TIME (12:30),
-            # exit only positions that are currently AT A LOSS — they have
-            # missed the morning impulse and will drift further through lunch.
-            # Profitable positions are left to run to their target or breakeven SL.
-            _orb_cutoff_time = now_ist.replace(
-                hour=_orb_mh_live[0], minute=_orb_mh_live[1],
-                second=0, microsecond=0
-            ).time()
-            if position.strategy_name == "ORB" and now_time >= _orb_cutoff_time:
-                exit_price = float(df["Close"].iloc[-2])
-                is_losing  = (
-                    (position.direction == "BUY"  and exit_price < position.entry_price) or
-                    (position.direction == "SELL" and exit_price > position.entry_price)
-                )
-                if is_losing:
-                    ok = square_off(symbol, position.direction, position.quantity)
-                    if ok:
-                        tracker.remove_position(symbol)
-                        closed_today.add(symbol)
-                        perf.record_trade(
-                            symbol      = symbol,
-                            direction   = position.direction,
-                            entry_price = position.entry_price,
-                            exit_price  = exit_price,
-                            quantity    = position.quantity,
-                            entry_time  = position.entry_time,
-                            exit_reason = "TIME_EXIT",
-                            strategy    = position.strategy_name,
-                        )
-                        logger.info(f"{symbol} ORB: TIME_EXIT (losing) at {now_ist.strftime('%H:%M')} — closed at {exit_price:.2f}")
-                    continue
-                # Position is profitable — fall through to normal exit checks
 
             # Route to the strategy module that opened this position
             strategy_module = next(
