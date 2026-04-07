@@ -13,25 +13,26 @@ The 9/20 EMA cross confirms short-term trend direction, while the 50 EMA
 acts as a macro session filter — only trade in the direction the stock has
 been trending for most of the session.
 
-PROFITABILITY IMPROVEMENTS (vs v1)
-------------------------------------
-1. 50 EMA macro trend filter (new):
+BOTH LONG AND SHORT TRADES
+---------------------------
+  LONG  — 9 EMA > 50 EMA (session uptrend), price pulls back to VWAP and bounces.
+  SHORT — 9 EMA < 50 EMA (session downtrend), price rallies to VWAP and rejects.
+
+KEY IMPROVEMENTS
+----------------
+1. 50 EMA macro trend filter:
    Only LONG if 9 EMA > 50 EMA (stock has been bullish most of the session).
    Only SHORT if 9 EMA < 50 EMA.
-   Eliminates VWAP trades taken against the session's established direction —
-   those were the main source of losing trades in the original version.
+   Eliminates VWAP trades taken against the session's established direction.
 
 2. Stronger EMA_REVERSAL exit condition:
-   Previously exited the moment 9/20 EMAs crossed — which happens dozens
-   of times per day on 2-min charts, cutting many winning trades short.
-   Now requires BOTH the EMA cross AND price to confirm:
-   For LONG: 9 EMA < 20 EMA AND close < 20 EMA (not just a cross).
-   This keeps trades alive through minor pullbacks while exiting true reversals.
+   Requires BOTH the EMA cross AND price to confirm:
+   For LONG: 9 EMA < 20 EMA AND close < 20 EMA.
+   Keeps trades alive through minor pullbacks while exiting true reversals.
 
-3. Minimum risk filter (new):
+3. Minimum risk filter:
    Skips trades where risk is < VWAP_MIN_RISK_PCT (0.2%) of entry price.
-   Tiny-risk setups are usually price hugging VWAP — the Rs40 brokerage
-   becomes a disproportionate cost relative to the small profit potential.
+   Tiny-risk setups near VWAP are usually noise relative to Rs40 brokerage.
 
 4. Loosened entry filters:
    VWAP proximity: 0.4% → 0.7%  (catches more valid pullbacks)
@@ -156,7 +157,6 @@ def generate_signal(df: pd.DataFrame, symbol: str = "", sim_time=None) -> dict:
         risk = close - sl
         if risk <= 0:
             return _HOLD
-        # Minimum risk filter: avoid tiny setups eaten by brokerage
         if risk / close < VWAP_MIN_RISK_PCT:
             logger.info(f"{symbol} VWAP: LONG rejected — risk too small ({risk/close:.3%} < {VWAP_MIN_RISK_PCT:.3%})")
             return _HOLD
@@ -227,7 +227,6 @@ def check_exit_signal(df: pd.DataFrame, position: dict) -> str | None:
         if close <= sl:
             return "STOP_LOSS"
         # Confirmed reversal: 9 EMA crossed below 20 EMA AND price is below 20 EMA.
-        # Both conditions required — the EMA cross alone on a 2-min chart is too noisy.
         if ema_fast is not None and ema_slow is not None:
             if ema_fast < ema_slow and close < ema_slow:
                 return "EMA_REVERSAL"

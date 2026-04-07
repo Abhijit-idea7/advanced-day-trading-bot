@@ -3,12 +3,12 @@ indicators.py
 -------------
 All indicator implementations for the multi-strategy intraday bot.
 
-Indicators:
+Indicators computed:
   EMA Fast   — Exponential Moving Average (9-period)
   EMA Slow   — Exponential Moving Average (20-period)
   EMA Macro  — Exponential Moving Average (50-period) — session macro trend
-  VWAP       — Volume-Weighted Average Price (anchored per day)
-  RSI        — Relative Strength Index (Wilder's smoothing)
+  VWAP       — Volume-Weighted Average Price (anchored per day, resets daily)
+  RSI        — Relative Strength Index (Wilder's smoothing, 14-period)
   Volume Avg — Rolling mean volume over VOLUME_LOOKBACK candles
   ORB        — Opening Range High/Low for first ORB_MINUTES of session
   Prev Close — Previous trading day's closing price (for gap calculation)
