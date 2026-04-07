@@ -265,13 +265,21 @@ def simulate_day(
             if len(df_slice) < 2:
                 continue
 
-            # ORB time-based exit: ORB is a morning-momentum strategy.
-            # Any ORB position still open at ORB_MAX_HOLD_TIME is exited at the
-            # current close — avoiding the dead lunch period and afternoon drift.
+            # ORB conditional time-based exit: at ORB_MAX_HOLD_TIME (12:30),
+            # exit positions that are currently AT A LOSS — those trades have
+            # missed the morning impulse and will drift lower through lunch.
+            # Profitable positions are left to run; they may still hit target
+            # or will exit via breakeven SL / SQUARE_OFF with a real gain.
             if pos.strategy_name == "ORB" and ts_time >= ORB_MAX_HOLD:
                 px = float(df_slice.iloc[-1]["Close"])
-                _close_position(symbol, px, "TIME_EXIT", ts_str)
-                continue
+                is_losing = (
+                    (pos.direction == "BUY"  and px < pos.entry_price) or
+                    (pos.direction == "SELL" and px > pos.entry_price)
+                )
+                if is_losing:
+                    _close_position(symbol, px, "TIME_EXIT", ts_str)
+                    continue
+                # Position is profitable — let it run to target / breakeven SL
 
             # Route exit check to the strategy that opened this position
             strategy_module = next(
