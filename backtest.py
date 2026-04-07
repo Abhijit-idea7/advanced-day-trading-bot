@@ -44,6 +44,7 @@ from config import (
     ACTIVE_STRATEGY,
     MAX_POSITIONS,
     ONE_TRADE_PER_STOCK_PER_DAY,
+    ORB_MAX_HOLD_TIME,
     POSITION_SIZE_INR,
     STOCK_UNIVERSE,
     TOP_N_STOCKS,
@@ -64,6 +65,8 @@ logger = logging.getLogger("backtest")
 IST          = pytz.timezone("Asia/Kolkata")
 TRADE_START  = time(9, 20)
 SQUARE_OFF   = time(15, 15)
+_orb_mh      = list(map(int, ORB_MAX_HOLD_TIME.split(":")))
+ORB_MAX_HOLD = time(_orb_mh[0], _orb_mh[1])   # time-based exit for ORB positions
 BROKERAGE    = 40         # Rs20 × 2 legs per trade (Zerodha intraday)
 OUTPUT_CSV   = Path("backtest_results.csv")
 
@@ -260,6 +263,14 @@ def simulate_day(
             pos = open_positions[symbol]
             df_slice = df[df.index < ts]   # strictly less than → only closed candles
             if len(df_slice) < 2:
+                continue
+
+            # ORB time-based exit: ORB is a morning-momentum strategy.
+            # Any ORB position still open at ORB_MAX_HOLD_TIME is exited at the
+            # current close — avoiding the dead lunch period and afternoon drift.
+            if pos.strategy_name == "ORB" and ts_time >= ORB_MAX_HOLD:
+                px = float(df_slice.iloc[-1]["Close"])
+                _close_position(symbol, px, "TIME_EXIT", ts_str)
                 continue
 
             # Route exit check to the strategy that opened this position

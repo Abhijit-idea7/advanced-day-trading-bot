@@ -51,10 +51,18 @@ TARGET      LONG: Entry + (ORB range × 2.5)  |  SHORT: mirror
 
 EXIT SIGNALS
 ------------
-  TARGET     : Price hits the calculated target
-  STOP_LOSS  : Price hits ORB Low (LONG) or ORB High (SHORT)
-  ORB_FAILED : Price closes more than ORB_FAILED_BUFFER_PCT (0.3%) back
+  TARGET     : Candle High (LONG) / Low (SHORT) touches the calculated target
+               — intrabar detection so no fills are missed
+  STOP_LOSS  : Candle Low (LONG) / High (SHORT) touches the effective SL,
+               which starts at ORB Low/High and moves to entry (breakeven)
+               once the trade gains ORB_BREAKEVEN_TRIGGER_R × initial risk
+  ORB_FAILED : Price CLOSES more than ORB_FAILED_BUFFER_PCT (0.8%) back
                inside the opening range — confirmed false breakout
+               (close-based intentionally; intrabar wicks are noise)
+  TIME_EXIT  : Position still open at ORB_MAX_HOLD_TIME (12:30 IST) —
+               ORB momentum has faded; exit at current close rather than
+               holding through the dead lunch and afternoon session.
+               Handled in the main loop / backtest engine, not here.
 
 INDIA-SPECIFIC NOTES
 --------------------

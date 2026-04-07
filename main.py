@@ -31,6 +31,7 @@ from config import (
     LOOP_SLEEP_SECONDS,
     MAX_POSITIONS,
     ONE_TRADE_PER_STOCK_PER_DAY,
+    ORB_MAX_HOLD_TIME,
     SQUARE_OFF_TIME,
     TRADE_START_TIME,
 )
@@ -105,6 +106,9 @@ def fetch_and_prepare(symbol: str):
 # Exit management
 # ---------------------------------------------------------------------------
 
+_orb_mh_live = list(map(int, ORB_MAX_HOLD_TIME.split(":")))
+
+
 def check_exits(
     tracker:      TradeTracker,
     perf:         PerformanceTracker,
@@ -112,11 +116,43 @@ def check_exits(
     strategies:   list,
 ) -> None:
     """Evaluate all open positions and close any that hit their exit condition."""
+    now_ist  = datetime.now(IST)
+    now_time = now_ist.time()
+
     for position in tracker.all_positions():
         symbol = position.symbol
         try:
             df = fetch_and_prepare(symbol)
             if df is None:
+                continue
+
+            # ORB time-based exit: morning momentum fades after 12:30 IST.
+            # Close ORB positions still open at ORB_MAX_HOLD_TIME rather than
+            # letting them drift through lunch and afternoon.
+            if (
+                position.strategy_name == "ORB"
+                and now_time >= now_ist.replace(
+                    hour=_orb_mh_live[0], minute=_orb_mh_live[1],
+                    second=0, microsecond=0
+                ).time()
+            ):
+                reason     = "TIME_EXIT"
+                exit_price = float(df["Close"].iloc[-2])
+                ok = square_off(symbol, position.direction, position.quantity)
+                if ok:
+                    tracker.remove_position(symbol)
+                    closed_today.add(symbol)
+                    perf.record_trade(
+                        symbol      = symbol,
+                        direction   = position.direction,
+                        entry_price = position.entry_price,
+                        exit_price  = exit_price,
+                        quantity    = position.quantity,
+                        entry_time  = position.entry_time,
+                        exit_reason = reason,
+                        strategy    = position.strategy_name,
+                    )
+                    logger.info(f"{symbol} ORB: TIME_EXIT at {now_ist.strftime('%H:%M')} — closed at {exit_price:.2f}")
                 continue
 
             # Route to the strategy module that opened this position

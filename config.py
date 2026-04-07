@@ -74,6 +74,14 @@ ORB_TARGET_MULTIPLIER = 2.5
 ORB_ENTRY_CUTOFF_TIME = "11:00"
 # No new ORB entries after 11:00 IST. Morning momentum window only.
 
+ORB_MAX_HOLD_TIME = "12:30"
+# Time-based exit: close any open ORB position at this time if it has not
+# yet hit target or stop-loss. ORB is a morning-momentum strategy — trades
+# still alive at 12:30 IST have missed the breakout impulse and will
+# drift through the dead lunch period (12:00–13:30) and afternoon session.
+# Exiting at 12:30 converts lingering SQUARE_OFFs into deliberate exits,
+# cutting capital exposure and locking in whatever P&L exists at the time.
+
 ORB_MIN_GAP_PCT = 0.002
 # Gap-direction filter (the book's "Gap-and-Go" rule).
 # If today's open is >0.2% above prev close → bias is UP → only take LONG ORB.
