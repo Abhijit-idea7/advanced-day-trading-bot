@@ -37,6 +37,12 @@ def get_strategies() -> list:
         "VWAP_EMA":    [strategy_vwap_ema],
         "COMBINED":    [strategy_orb, strategy_vwap_ema],
         "ALPHA_COMBO": [strategy_alpha_combo],
+        "ALPHA_ORB":   [strategy_orb, strategy_alpha_combo],
+        # ALPHA_ORB: dual-strategy mode.
+        # 9:20–11:00 IST — ORB gets first priority per symbol (actual breakout signal).
+        #                    ALPHA fills remaining slots on stocks ORB didn't fire on.
+        # 11:00–13:00 IST — ORB cutoff passed; ALPHA_COMBO handles all remaining entries.
+        # One position per stock per day; MAX_POSITIONS pool is shared between both.
     }
 
     key = ACTIVE_STRATEGY.upper().strip()
