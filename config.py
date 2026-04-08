@@ -161,12 +161,13 @@ RISK_REWARD_RATIO = 2.0   # Used by VWAP_EMA strategy target calculation
 # ---------------------------------------------------------------------------
 ONE_TRADE_PER_STOCK_PER_DAY = True
 
-DAILY_LOSS_CIRCUIT_BREAKER = -2_500
-# Stop opening new positions once today's realized net P&L falls below this.
-# Unlike MAX_DAILY_TRADES, this only activates on bad days — good days run
-# without any cap. On the worst backtest days (0% win rate, 10 losses),
-# the circuit would have tripped after ~3–4 trades rather than running
-# all 10 to maximum loss. Set to -2,500 (approx 1.5 average losing days).
+DAILY_LOSS_CIRCUIT_BREAKER = -999_999
+# Disabled: backtest showed the breaker backfired — with MAX_POSITIONS=6,
+# trades open in batches so the threshold isn't crossed until mid-session,
+# by which point it blocked recovery winners (Feb 27: missed 2 wins worth
+# Rs633 gross by stopping at trade 7). Net effect was -Rs2,616 worse.
+# Set to -999,999 so it never triggers. Re-enable only if a smarter
+# consecutive-loss variant is implemented.
 TRADE_START_TIME   = "09:20"   # No entries before this IST time
 SQUARE_OFF_TIME    = "15:15"   # Force-close all positions at this IST time
 CANDLE_INTERVAL    = "2m"      # yfinance interval string
