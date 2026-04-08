@@ -97,8 +97,17 @@ def square_off(symbol: str, open_direction: str, quantity: int) -> bool:
     return _send_webhook(payload)
 
 
-def calculate_quantity(price: float) -> int:
-    """Floor division of POSITION_SIZE_INR by current price."""
+def calculate_quantity(price: float, scale: float = 1.0) -> int:
+    """
+    Compute share quantity for a trade.
+
+    For standard strategies: scale = 1.0 → POSITION_SIZE_INR / price.
+    For ALPHA_COMBO: scale = signal["quantity_scale"] ∈ (0, 1] so that
+    stronger alpha conviction allocates more capital within the cap.
+
+    Always returns at least 0 (never negative).
+    """
     if price <= 0:
         return 0
-    return int(POSITION_SIZE_INR // price)
+    effective_capital = POSITION_SIZE_INR * max(0.0, min(scale, 1.0))
+    return int(effective_capital // price)

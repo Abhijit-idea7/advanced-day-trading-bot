@@ -30,11 +30,13 @@ def get_strategies() -> list:
     """
     import strategy_orb
     import strategy_vwap_ema
+    import strategy_alpha_combo
 
     registry = {
-        "ORB":      [strategy_orb],
-        "VWAP_EMA": [strategy_vwap_ema],
-        "COMBINED": [strategy_orb, strategy_vwap_ema],
+        "ORB":         [strategy_orb],
+        "VWAP_EMA":    [strategy_vwap_ema],
+        "COMBINED":    [strategy_orb, strategy_vwap_ema],
+        "ALPHA_COMBO": [strategy_alpha_combo],
     }
 
     key = ACTIVE_STRATEGY.upper().strip()
@@ -43,9 +45,9 @@ def get_strategies() -> list:
     if selected is None:
         logger.warning(
             f"Unknown ACTIVE_STRATEGY='{ACTIVE_STRATEGY}'. "
-            f"Valid options: {list(registry.keys())}. Defaulting to ORB."
+            f"Valid options: {list(registry.keys())}. Defaulting to ALPHA_COMBO."
         )
-        selected = [strategy_orb]
+        selected = [strategy_alpha_combo]
 
     names = [m.__name__ for m in selected]
     logger.info(f"Active strategies: {names}")

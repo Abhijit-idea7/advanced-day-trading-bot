@@ -170,3 +170,65 @@ EXCHANGE     = "NSE"
 PRODUCT_TYPE = "INTRADAY"
 ORDER_TYPE   = "MARKET"
 VARIETY      = "REGULAR"
+
+# ---------------------------------------------------------------------------
+# Alpha Combination Strategy Parameters
+# ---------------------------------------------------------------------------
+# Initial IC-based signal weights.
+# Based on known signal quality for NSE intraday trading (normalized to 1.0).
+# The ICWeightTracker in strategy_alpha_combo.py updates these automatically
+# at end of each session using Pearson IC regression (simplified Step 10/11
+# of the 11-step institutional alpha combination procedure).
+#
+# Weight rationale (matches IC priors in signal_library.py):
+#   orb             0.20 → IC≈0.10 (strongest structural signal)
+#   gap             0.16 → IC≈0.08 (institutional overnight bias)
+#   vwap_deviation  0.14 → IC≈0.07 (session fair-value anchor)
+#   ema_trend       0.14 → IC≈0.07 (session trend direction)
+#   momentum        0.13 → IC≈0.06 (price rate-of-change)
+#   volume_pressure 0.13 → IC≈0.06 (microstructure order flow)
+#   rsi             0.10 → IC≈0.05 (momentum quality)
+ALPHA_WEIGHTS = {
+    "orb":             0.20,
+    "gap":             0.16,
+    "vwap_deviation":  0.14,
+    "ema_trend":       0.14,
+    "momentum":        0.13,
+    "volume_pressure": 0.13,
+    "rsi":             0.10,
+}
+
+ALPHA_ENTRY_THRESHOLD   = 0.30
+# Minimum |combined alpha score| to trigger a trade.
+# At threshold=0.30, we need a weighted majority of signals pointing in the
+# same direction with meaningful strength. Raising this to 0.40 reduces
+# trade frequency but improves average quality (higher IC bar per trade).
+
+ALPHA_EXIT_THRESHOLD    = 0.25
+# Alpha score reversal magnitude that triggers ALPHA_EXIT.
+# Slightly lower than ALPHA_ENTRY_THRESHOLD so we exit before a full reversal
+# signal would trigger a new opposing trade.
+
+ALPHA_ATR_LOOKBACK      = 14
+# Candles for ATR computation (matches RSI_PERIOD for consistency).
+
+ALPHA_ATR_SL_MULT       = 1.5
+# Stop-loss = ATR × this multiple.
+# 1.5× ATR gives the trade breathing room while keeping risk well-defined.
+
+ALPHA_TARGET_RR         = 2.5
+# Target = SL_distance × this R:R multiplier.
+# A 40% win rate is profitable at 2.5× R:R, matching the ORB strategy.
+
+ALPHA_IC_WINDOW         = 200
+# Rolling observation window for IC computation.
+# At 20 stocks × ~90 bars/day, we accumulate 1,800 observations per session,
+# so the window fills within a single day and becomes meaningful immediately.
+
+ALPHA_ENTRY_CUTOFF_TIME = "13:00"
+# No new ALPHA_COMBO entries after 13:00 IST.
+# Wider than ORB (11:00) and VWAP_EMA (12:30) because ALPHA_COMBO combines
+# both structural and trend signals that remain informative into midday.
+
+ALPHA_MOMENTUM_LOOKBACK = 10
+# Candles for the momentum signal rate-of-change calculation (10 × 2 min = 20 min).

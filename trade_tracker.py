@@ -33,6 +33,7 @@ class Position:
     quantity:      int
     entry_time:    str    # "HH:MM" IST
     strategy_name: str = "UNKNOWN"   # strategy that opened this position
+    signal_scores: dict = field(default_factory=dict)  # ALPHA_COMBO IC tracking
 
 
 class TradeTracker:
@@ -73,6 +74,7 @@ class TradeTracker:
         target:        float,
         quantity:      int,
         strategy_name: str = "UNKNOWN",
+        signal_scores: dict = None,
     ) -> None:
         entry_time = datetime.now(IST).strftime("%H:%M")
         self._positions[symbol] = Position(
@@ -84,6 +86,7 @@ class TradeTracker:
             quantity      = quantity,
             entry_time    = entry_time,
             strategy_name = strategy_name,
+            signal_scores = signal_scores or {},
         )
         self.daily_trades += 1
         logger.info(

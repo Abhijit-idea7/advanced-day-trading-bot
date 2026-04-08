@@ -4,9 +4,12 @@ main.py
 Multi-strategy intraday trading bot entry point.
 
 Supported strategies (configure via ACTIVE_STRATEGY in config.py or env var):
-  ORB       — Opening Range Breakout  (fires 9:30–11:00 IST)
-  VWAP_EMA  — VWAP + 9/20 EMA Pullback  (fires 9:20–12:30 IST)
-  COMBINED  — Both strategies run simultaneously, first signal wins per symbol
+  ORB         — Opening Range Breakout  (fires 9:30–11:00 IST)
+  VWAP_EMA    — VWAP + 9/20 EMA Pullback  (fires 9:20–12:30 IST)
+  COMBINED    — ORB and VWAP_EMA simultaneously, first signal wins per symbol
+  ALPHA_COMBO — 7-signal IC-weighted ensemble (fires 9:20–13:00 IST)
+                Implements the Fundamental Law of Active Management:
+                IR = IC × sqrt(N) across 7 independent alpha signals.
 
 Lifecycle (runs as a single long-lived process via GitHub Actions):
   1. GitHub Actions cron starts the runner at 03:15 UTC = 08:45 IST
@@ -16,8 +19,9 @@ Lifecycle (runs as a single long-lived process via GitHub Actions):
        a. Check exits for all open positions (target / SL / strategy-specific exit)
        b. Scan candidates for new entry signals (all active strategies)
   5. At 15:15 IST: force-close all open positions (SQUARE_OFF)
-  6. Print daily P&L summary and save to performance_log.csv
-  7. CSV is committed back to the repo by the GitHub Actions workflow step
+  6. If ALPHA_COMBO: update IC-based signal weights from today's trade data
+  7. Print daily P&L summary and save to performance_log.csv
+  8. CSV is committed back to the repo by the GitHub Actions workflow step
 """
 
 import logging
@@ -130,6 +134,15 @@ def check_exits(
                 exit_price = float(df["Close"].iloc[-2])
                 ok = square_off(symbol, position.direction, position.quantity)
                 if ok:
+                    # Record outcome for ALPHA_COMBO IC tracking
+                    if position.strategy_name == "ALPHA_COMBO":
+                        from strategy_alpha_combo import record_outcome
+                        record_outcome(
+                            signal_scores = position.signal_scores,
+                            direction     = position.direction,
+                            entry_price   = position.entry_price,
+                            exit_price    = exit_price,
+                        )
                     tracker.remove_position(symbol)
                     closed_today.add(symbol)
                     perf.record_trade(
@@ -212,8 +225,9 @@ def scan_for_entries(
                 if signal["action"] not in ("BUY", "SELL"):
                     continue
 
-                entry_price = float(df["Close"].iloc[-2])
-                quantity    = calculate_quantity(entry_price)
+                entry_price    = float(df["Close"].iloc[-2])
+                quantity_scale = signal.get("quantity_scale", 1.0)
+                quantity       = calculate_quantity(entry_price, scale=quantity_scale)
 
                 if quantity < 1:
                     logger.warning(f"{symbol}: qty rounds to 0 at Rs{entry_price:.2f}, skipping.")
@@ -229,6 +243,7 @@ def scan_for_entries(
                         target        = signal["target"],
                         quantity      = quantity,
                         strategy_name = get_strategy_name(strategy_module),
+                        signal_scores = signal.get("signal_scores", {}),
                     )
                 break  # one signal per symbol per loop tick
 
@@ -288,7 +303,13 @@ def run() -> None:
         logger.info(f"Sleeping {LOOP_SLEEP_SECONDS}s until next candle...")
         time.sleep(LOOP_SLEEP_SECONDS)
 
-    # End of day
+    # End of day — ALPHA_COMBO: update IC weights from today's trade data
+    if "ALPHA_COMBO" in ACTIVE_STRATEGY.upper():
+        from strategy_alpha_combo import end_of_day_weight_update
+        ics = end_of_day_weight_update()
+        if ics:
+            logger.info(f"ALPHA IC update complete: {ics}")
+
     perf.daily_summary()
     perf.save_to_csv()
     logger.info("Bot exited cleanly.")
