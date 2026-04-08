@@ -13,9 +13,11 @@ name: Intraday Trading Bot
 # Timeout: 390 minutes covers 08:45 → 15:30 IST with buffer.
 #
 # ACTIVE_STRATEGY can be set as a GitHub Actions secret or env var:
-#   ORB       — Opening Range Breakout (default)
-#   VWAP_EMA  — VWAP + 9/20 EMA Pullback
-#   COMBINED  — Both strategies simultaneously
+#   ORB         — Opening Range Breakout
+#   VWAP_EMA    — VWAP + 9/20 EMA Pullback
+#   COMBINED    — ORB + VWAP_EMA simultaneously
+#   ALPHA_COMBO — 7-signal IC-weighted ensemble (default)
+#   ALPHA_ORB   — ORB morning breakouts + ALPHA_COMBO midday (recommended)
 # -----------------------------------------------------------------------
 
 on:
@@ -24,9 +26,9 @@ on:
   workflow_dispatch:           # Manual trigger from GitHub Actions UI
     inputs:
       strategy:
-        description: "Active strategy (ORB / VWAP_EMA / COMBINED / ALPHA_COMBO)"
+        description: "Active strategy (ORB / VWAP_EMA / COMBINED / ALPHA_COMBO / ALPHA_ORB)"
         required: false
-        default: "ALPHA_COMBO"
+        default: "ALPHA_ORB"
 
 # -----------------------------------------------------------------------
 # Concurrency: only ONE run of this workflow at a time.
@@ -77,7 +79,7 @@ jobs:
         env:
           STOCKSDEVELOPER_API_KEY: ${{ secrets.STOCKSDEVELOPER_API_KEY }}
           STOCKSDEVELOPER_ACCOUNT: ${{ secrets.STOCKSDEVELOPER_ACCOUNT }}
-          ACTIVE_STRATEGY: ${{ github.event.inputs.strategy || secrets.ACTIVE_STRATEGY || 'ALPHA_COMBO' }}
+          ACTIVE_STRATEGY: ${{ github.event.inputs.strategy || secrets.ACTIVE_STRATEGY || 'ALPHA_ORB' }}
         run: python main.py
 
       # 5. Commit performance_log.csv back to repo
