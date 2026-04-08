@@ -24,9 +24,9 @@ on:
   workflow_dispatch:           # Manual trigger from GitHub Actions UI
     inputs:
       strategy:
-        description: "Active strategy (ORB / VWAP_EMA / COMBINED)"
+        description: "Active strategy (ORB / VWAP_EMA / COMBINED / ALPHA_COMBO)"
         required: false
-        default: "ORB"
+        default: "ALPHA_COMBO"
 
 # -----------------------------------------------------------------------
 # Concurrency: only ONE run of this workflow at a time.
@@ -77,7 +77,7 @@ jobs:
         env:
           STOCKSDEVELOPER_API_KEY: ${{ secrets.STOCKSDEVELOPER_API_KEY }}
           STOCKSDEVELOPER_ACCOUNT: ${{ secrets.STOCKSDEVELOPER_ACCOUNT }}
-          ACTIVE_STRATEGY: ${{ github.event.inputs.strategy || secrets.ACTIVE_STRATEGY || 'ORB' }}
+          ACTIVE_STRATEGY: ${{ github.event.inputs.strategy || secrets.ACTIVE_STRATEGY || 'ALPHA_COMBO' }}
         run: python main.py
 
       # 5. Commit performance_log.csv back to repo
