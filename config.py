@@ -144,8 +144,16 @@ MAX_POSITIONS     = 6         # Max simultaneous open positions
 # Backtest: 300 trades × Rs40 = Rs12,000 brokerage consumed 34% of gross.
 # At ~150 trades: Rs6,000 brokerage on the same-quality gross P&L.
 
-TOP_N_STOCKS      = 10        # Candidates selected daily by ATR%
-# Keep 10 candidates so the threshold filter has enough to choose from.
+TOP_N_STOCKS      = 6         # Candidates selected daily by ATR%
+# Reduced from 10 → 6 to match MAX_POSITIONS (also 6).
+# With ONE_TRADE_PER_STOCK_PER_DAY=True, the daily trade ceiling is
+# mathematically capped at TOP_N_STOCKS: once each stock has traded once,
+# no new entries are possible regardless of free position slots.
+# Why MAX_POSITIONS=6 alone didn't reduce trades: positions cycle intraday
+# (open 6, some hit target, 2 more enter from remaining candidates, etc.)
+# TOP_N_STOCKS=6 removes the remaining candidates, closing that loop.
+# Concentrating on the 6 highest-ATR% stocks also improves signal quality:
+# these are the stocks with the most momentum and cleanest breakouts.
 
 # ---------------------------------------------------------------------------
 # Risk / Reward
