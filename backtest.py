@@ -42,6 +42,7 @@ import yfinance as yf
 
 from config import (
     ACTIVE_STRATEGY,
+    DAILY_LOSS_CIRCUIT_BREAKER,
     MAX_POSITIONS,
     ONE_TRADE_PER_STOCK_PER_DAY,
     POSITION_SIZE_INR,
@@ -196,6 +197,7 @@ def simulate_day(
     trades: list[BtTrade]         = []
     open_positions: dict[str, BtPosition] = {}
     traded_today:   set[str]      = set()
+    daily_realized_pnl: float     = 0.0
 
     # Build per-symbol DataFrames for this day
     day_data: dict[str, pd.DataFrame] = {}
@@ -214,6 +216,7 @@ def simulate_day(
     all_times = sorted({ts for df in day_data.values() for ts in df.index})
 
     def _close_position(symbol: str, exit_px: float, reason: str, ts_str: str):
+        nonlocal daily_realized_pnl
         pos = open_positions.pop(symbol)
         traded_today.add(symbol)
         pnl = (
@@ -221,6 +224,7 @@ def simulate_day(
             if pos.direction == "BUY"
             else (pos.entry_price - exit_px) * pos.quantity
         )
+        daily_realized_pnl += pnl
         trades.append(BtTrade(
             date        = date_.isoformat(),
             symbol      = symbol,
@@ -285,7 +289,8 @@ def simulate_day(
 
         # --- Entry checks ---
         # Bug fix #3 (entry): same df_slice boundary — strictly less than ts.
-        if len(open_positions) < MAX_POSITIONS:
+        circuit_tripped = daily_realized_pnl <= DAILY_LOSS_CIRCUIT_BREAKER
+        if len(open_positions) < MAX_POSITIONS and not circuit_tripped:
             for symbol in candidates:
                 if len(open_positions) >= MAX_POSITIONS:
                     break
