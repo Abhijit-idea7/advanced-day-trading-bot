@@ -428,52 +428,59 @@ def check_exit_signal(df: pd.DataFrame, position: dict) -> str | None:
     Exit conditions for an open ALPHA_COMBO position.
 
     Priority:
-      1. TARGET      — close touches / exceeds calculated target
-      2. STOP_LOSS   — close touches / breaches stop-loss level
+      1. TARGET      — candle CLOSE reaches the calculated target
+      2. STOP_LOSS   — candle CLOSE breaches the effective stop-loss
+                       (breakeven: effective SL rises to entry once close
+                        gains ALPHA_BREAKEVEN_TRIGGER_R × initial_risk)
       3. ALPHA_EXIT  — combined alpha score reverses past ALPHA_EXIT_THRESHOLD
       4. EMA_FLIP    — 9 EMA crosses the 50 EMA against trade direction
 
-    Uses iloc[-2] (last completed candle), matching all other strategy modules.
+    IMPORTANT: TARGET and STOP_LOSS both use candle CLOSE, not intrabar
+    High/Low. Intrabar detection causes SL wicks to stop out trades that
+    recover and close above the SL — dramatically increasing false stop-outs.
+    Backtest showed switching to intrabar raised STOP_LOSS from 160→230 and
+    cut win rate from 39%→23%. Close-based is the correct reference.
     """
     if len(df) < 3:
         return None
 
     row       = df.iloc[-2]
     close     = float(row["Close"])
-    candle_h  = float(row["High"])
-    candle_l  = float(row["Low"])
     direction = position["direction"]
     target    = float(position["target"])
     sl        = float(position["sl"])
 
-    # Breakeven trailing stop:
-    # Once the trade gains ALPHA_BREAKEVEN_TRIGGER_R × initial_risk in its
-    # favour (measured by candle High/Low for intrabar detection), raise the
-    # effective stop-loss to entry price. Converts a potential loss to breakeven.
+    # Breakeven trailing stop (close-based):
+    # Once the close gains ALPHA_BREAKEVEN_TRIGGER_R × initial_risk in favour,
+    # raise the effective SL to entry price. Uses close (not intrabar High/Low)
+    # so temporary wicks don't falsely trigger the breakeven and then stop out.
     entry_price  = float(position.get("entry_price", sl))
     initial_risk = abs(entry_price - sl)
 
-    # 1. Target (use candle High/Low for intrabar detection — same as ORB strategy)
-    if direction == "BUY"  and candle_h >= target:
-        return "TARGET"
-    if direction == "SELL" and candle_l <= target:
-        return "TARGET"
-
-    # 2. Stop-loss with breakeven upgrade
     if direction == "BUY":
-        if initial_risk > 0 and candle_h >= entry_price + ALPHA_BREAKEVEN_TRIGGER_R * initial_risk:
-            effective_sl = max(sl, entry_price)   # raise SL to entry (breakeven)
+        # Breakeven: close has gained 60% of initial risk → effective SL = entry
+        if initial_risk > 0 and close >= entry_price + ALPHA_BREAKEVEN_TRIGGER_R * initial_risk:
+            effective_sl = max(sl, entry_price)
         else:
             effective_sl = sl
-        if candle_l <= effective_sl:
+        # 1. Target
+        if close >= target:
+            return "TARGET"
+        # 2. Stop-loss (with possible breakeven upgrade)
+        if close <= effective_sl:
             return "STOP_LOSS"
 
     else:  # SELL
-        if initial_risk > 0 and candle_l <= entry_price - ALPHA_BREAKEVEN_TRIGGER_R * initial_risk:
-            effective_sl = min(sl, entry_price)   # lower SL to entry (breakeven)
+        # Breakeven: close has dropped 60% of initial risk → effective SL = entry
+        if initial_risk > 0 and close <= entry_price - ALPHA_BREAKEVEN_TRIGGER_R * initial_risk:
+            effective_sl = min(sl, entry_price)
         else:
             effective_sl = sl
-        if candle_h >= effective_sl:
+        # 1. Target
+        if close <= target:
+            return "TARGET"
+        # 2. Stop-loss (with possible breakeven upgrade)
+        if close >= effective_sl:
             return "STOP_LOSS"
 
     # 3. Alpha score reversal

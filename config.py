@@ -205,12 +205,12 @@ ALPHA_ENTRY_THRESHOLD   = 0.30
 # trade frequency but improves average quality (higher IC bar per trade).
 # NOTE: this is the default; regime filter overrides it dynamically.
 
-ALPHA_EXIT_THRESHOLD    = 0.15
+ALPHA_EXIT_THRESHOLD    = 0.20
 # Alpha score reversal magnitude that triggers ALPHA_EXIT.
-# Lowered from 0.25 → 0.15 based on backtest: ALPHA_EXIT fired only 2/300
-# times at 0.25 (threshold was too high to be useful).
-# At 0.15 it fires earlier when signals genuinely reverse, providing
-# a faster exit than waiting for price to hit the stop-loss.
+# 0.25 was too high (only 2/300 fires in backtest — almost never used).
+# 0.15 was too low (fires on normal signal noise, causing premature exits).
+# 0.20 is the middle ground: requires a genuine shift in signal consensus
+# without being triggered by per-candle oscillation.
 
 ALPHA_BREAKEVEN_TRIGGER_R = 0.6
 # Move stop-loss to breakeven (entry price) once the trade gains
