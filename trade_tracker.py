@@ -17,7 +17,7 @@ from datetime import datetime
 
 import pytz
 
-from config import MAX_POSITIONS
+from config import DAILY_LOSS_CIRCUIT_BREAKER, MAX_POSITIONS
 
 IST    = pytz.timezone("Asia/Kolkata")
 logger = logging.getLogger(__name__)
@@ -40,6 +40,7 @@ class TradeTracker:
     def __init__(self) -> None:
         self._positions: dict[str, Position] = {}
         self.daily_trades: int = 0
+        self.daily_realized_pnl: float = 0.0   # net P&L of closed trades today
 
     # ------------------------------------------------------------------
     # Queries
@@ -55,8 +56,39 @@ class TradeTracker:
         return len(self._positions)
 
     def can_open_new_trade(self) -> bool:
-        """True if fewer than MAX_POSITIONS stocks are currently open."""
-        return self.open_count() < MAX_POSITIONS
+        """
+        True if a new position can be opened.
+
+        Blocked when:
+          a) MAX_POSITIONS concurrent slots are full, OR
+          b) Daily Loss Circuit Breaker has tripped — today's realized net P&L
+             has fallen below DAILY_LOSS_CIRCUIT_BREAKER. This stops new entries
+             on bad days without capping profits on good days.
+        """
+        if self.open_count() >= MAX_POSITIONS:
+            return False
+        if self.daily_realized_pnl <= DAILY_LOSS_CIRCUIT_BREAKER:
+            logger.info(
+                f"[CIRCUIT BREAKER] Daily realized P&L Rs{self.daily_realized_pnl:+,.0f} "
+                f"≤ limit Rs{DAILY_LOSS_CIRCUIT_BREAKER:,} — no new entries today."
+            )
+            return False
+        return True
+
+    def record_closed_pnl(self, entry_price: float, exit_price: float,
+                          quantity: int, direction: str) -> None:
+        """
+        Accumulate realized P&L from a closed trade (gross, before brokerage).
+        Called by main.py immediately after a position is squared off.
+        """
+        mult = 1 if direction == "BUY" else -1
+        pnl  = mult * (exit_price - entry_price) * quantity
+        self.daily_realized_pnl += pnl
+        logger.info(
+            f"[TRACKER] Realized P&L updated: trade={pnl:+,.0f} "
+            f"day_total={self.daily_realized_pnl:+,.0f} "
+            f"(circuit breaker at Rs{DAILY_LOSS_CIRCUIT_BREAKER:,})"
+        )
 
     def all_positions(self) -> list[Position]:
         return list(self._positions.values())

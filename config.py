@@ -144,16 +144,12 @@ MAX_POSITIONS     = 6         # Max simultaneous open positions
 # Backtest: 300 trades × Rs40 = Rs12,000 brokerage consumed 34% of gross.
 # At ~150 trades: Rs6,000 brokerage on the same-quality gross P&L.
 
-TOP_N_STOCKS      = 6         # Candidates selected daily by ATR%
-# Reduced from 10 → 6 to match MAX_POSITIONS (also 6).
-# With ONE_TRADE_PER_STOCK_PER_DAY=True, the daily trade ceiling is
-# mathematically capped at TOP_N_STOCKS: once each stock has traded once,
-# no new entries are possible regardless of free position slots.
-# Why MAX_POSITIONS=6 alone didn't reduce trades: positions cycle intraday
-# (open 6, some hit target, 2 more enter from remaining candidates, etc.)
-# TOP_N_STOCKS=6 removes the remaining candidates, closing that loop.
-# Concentrating on the 6 highest-ATR% stocks also improves signal quality:
-# these are the stocks with the most momentum and cleanest breakouts.
+TOP_N_STOCKS      = 10        # Candidates selected daily by ATR%
+# Reverted to 10 after comparing backtest results.
+# 6-stock version saved Rs4,560 brokerage but lost Rs11,512 gross P&L —
+# a net Rs6,952 worse outcome. Fewer candidates meant missing good trades,
+# not just marginal ones. Win rate was identical at 42.4% vs 42.6%.
+# Version A (10 stocks): Rs43,279 net | Version B (6 stocks): Rs36,327 net.
 
 # ---------------------------------------------------------------------------
 # Risk / Reward
@@ -164,6 +160,13 @@ RISK_REWARD_RATIO = 2.0   # Used by VWAP_EMA strategy target calculation
 # Trade Management
 # ---------------------------------------------------------------------------
 ONE_TRADE_PER_STOCK_PER_DAY = True
+
+DAILY_LOSS_CIRCUIT_BREAKER = -2_500
+# Stop opening new positions once today's realized net P&L falls below this.
+# Unlike MAX_DAILY_TRADES, this only activates on bad days — good days run
+# without any cap. On the worst backtest days (0% win rate, 10 losses),
+# the circuit would have tripped after ~3–4 trades rather than running
+# all 10 to maximum loss. Set to -2,500 (approx 1.5 average losing days).
 TRADE_START_TIME   = "09:20"   # No entries before this IST time
 SQUARE_OFF_TIME    = "15:15"   # Force-close all positions at this IST time
 CANDLE_INTERVAL    = "2m"      # yfinance interval string

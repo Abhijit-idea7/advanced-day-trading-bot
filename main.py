@@ -143,6 +143,10 @@ def check_exits(
                             entry_price   = position.entry_price,
                             exit_price    = exit_price,
                         )
+                    tracker.record_closed_pnl(
+                        position.entry_price, exit_price,
+                        position.quantity, position.direction,
+                    )
                     tracker.remove_position(symbol)
                     closed_today.add(symbol)
                     perf.record_trade(
@@ -174,6 +178,10 @@ def square_off_all(
             )
             ok = square_off(position.symbol, position.direction, position.quantity)
             if ok:
+                tracker.record_closed_pnl(
+                    position.entry_price, exit_price,
+                    position.quantity, position.direction,
+                )
                 tracker.remove_position(position.symbol)
                 closed_today.add(position.symbol)
                 perf.record_trade(
