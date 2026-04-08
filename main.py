@@ -200,11 +200,25 @@ def scan_for_entries(
     tracker:      TradeTracker,
     closed_today: set,
     strategies:   list,
+    regime:       dict | None = None,
 ) -> None:
-    """Check each candidate against all active strategies for a fresh entry signal."""
+    """
+    Check each candidate against all active strategies for a fresh entry signal.
+
+    regime : dict from market_regime.get_nifty_regime() — contains:
+      max_positions    : effective position cap for this loop tick
+      direction_filter : "LONG_ONLY" | "SHORT_ONLY" | "BOTH"
+    """
+    regime            = regime or {}
+    effective_max     = regime.get("max_positions", MAX_POSITIONS)
+    direction_filter  = regime.get("direction_filter", "BOTH")
+
     for symbol in candidates:
-        if not tracker.can_open_new_trade():
-            logger.info(f"All {MAX_POSITIONS} position slots occupied — pausing entries.")
+        if tracker.open_count() >= effective_max:
+            logger.info(
+                f"Position cap reached ({tracker.open_count()}/{effective_max} "
+                f"regime={regime.get('regime', 'N/A')}) — pausing entries."
+            )
             break
 
         if tracker.has_position(symbol):
@@ -223,6 +237,14 @@ def scan_for_entries(
                 signal = strategy_module.generate_signal(df, symbol=symbol)
 
                 if signal["action"] not in ("BUY", "SELL"):
+                    continue
+
+                # Apply NIFTY regime direction filter
+                if direction_filter == "LONG_ONLY"  and signal["action"] == "SELL":
+                    logger.info(f"{symbol}: SELL blocked — BULL regime (LONG_ONLY)")
+                    continue
+                if direction_filter == "SHORT_ONLY" and signal["action"] == "BUY":
+                    logger.info(f"{symbol}: BUY blocked — BEAR regime (SHORT_ONLY)")
                     continue
 
                 entry_price    = float(df["Close"].iloc[-2])
@@ -288,18 +310,29 @@ def run() -> None:
             square_off_all(tracker, perf, closed_today)
             break
 
-        # 1. Check exits first (always before entries)
+        # 1. Fetch NIFTY50 market regime (used by ALPHA_COMBO for threshold + direction filter)
+        regime = None
+        if "ALPHA_COMBO" in ACTIVE_STRATEGY.upper():
+            try:
+                from market_regime import get_nifty_regime
+                from strategy_alpha_combo import set_regime
+                regime = get_nifty_regime()
+                set_regime(regime)
+            except Exception as e:
+                logger.warning(f"Regime fetch failed: {e} — proceeding with NEUTRAL defaults")
+
+        # 2. Check exits first (always before entries)
         if tracker.open_count() > 0:
             check_exits(tracker, perf, closed_today, strategies)
 
-        # 2. Scan for new entries
+        # 3. Scan for new entries
         if tracker.can_open_new_trade():
-            scan_for_entries(candidates, tracker, closed_today, strategies)
+            scan_for_entries(candidates, tracker, closed_today, strategies, regime=regime)
 
-        # 3. Log current state
+        # 4. Log current state
         logger.info(tracker.summary())
 
-        # 4. Sleep until next candle
+        # 5. Sleep until next candle
         logger.info(f"Sleeping {LOOP_SLEEP_SECONDS}s until next candle...")
         time.sleep(LOOP_SLEEP_SECONDS)
 

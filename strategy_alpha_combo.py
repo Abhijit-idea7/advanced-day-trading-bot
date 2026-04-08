@@ -79,6 +79,7 @@ import pytz
 from config import (
     ALPHA_ATR_LOOKBACK,
     ALPHA_ATR_SL_MULT,
+    ALPHA_BREAKEVEN_TRIGGER_R,
     ALPHA_ENTRY_CUTOFF_TIME,
     ALPHA_ENTRY_THRESHOLD,
     ALPHA_EXIT_THRESHOLD,
@@ -96,6 +97,14 @@ STRATEGY_NAME = "ALPHA_COMBO"
 
 _HOLD         = {"action": "HOLD", "sl": 0.0, "target": 0.0}
 _WEIGHTS_FILE = Path(__file__).parent / "alpha_weights.json"
+
+# Current NIFTY regime — injected by main.py via set_regime() each loop tick.
+# Defaults to neutral so the strategy works standalone (backtest, no regime data).
+_current_regime: dict = {
+    "regime":           "NEUTRAL",
+    "alpha_threshold":  ALPHA_ENTRY_THRESHOLD,
+    "direction_filter": "BOTH",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +325,22 @@ def _compute_atr(df: pd.DataFrame, lookback: int) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Regime injection (called by main.py once per loop tick)
+# ---------------------------------------------------------------------------
+
+def set_regime(regime_dict: dict) -> None:
+    """
+    Inject the current NIFTY market regime so generate_signal can use
+    the regime-adjusted alpha threshold and direction filter.
+
+    Called from main.py at the start of each loop tick when ALPHA_COMBO
+    is active, before scan_for_entries() is called.
+    """
+    global _current_regime
+    _current_regime = regime_dict
+
+
+# ---------------------------------------------------------------------------
 # Public strategy interface  (matches the contract expected by strategy_factory)
 # ---------------------------------------------------------------------------
 
@@ -357,7 +382,9 @@ def generate_signal(df: pd.DataFrame, symbol: str = "", sim_time=None) -> dict:
         + " | ".join(f"{k}={v:+.2f}" for k, v in scores.items())
     )
 
-    if abs(alpha) < ALPHA_ENTRY_THRESHOLD:
+    # Use regime-adjusted threshold (higher bar in BEAR regime, lower in BULL)
+    effective_threshold = _current_regime.get("alpha_threshold", ALPHA_ENTRY_THRESHOLD)
+    if abs(alpha) < effective_threshold:
         return _HOLD
 
     # 4. ATR-based stop-loss and target
@@ -413,21 +440,41 @@ def check_exit_signal(df: pd.DataFrame, position: dict) -> str | None:
 
     row       = df.iloc[-2]
     close     = float(row["Close"])
+    candle_h  = float(row["High"])
+    candle_l  = float(row["Low"])
     direction = position["direction"]
     target    = float(position["target"])
     sl        = float(position["sl"])
 
-    # 1. Target
-    if direction == "BUY"  and close >= target:
+    # Breakeven trailing stop:
+    # Once the trade gains ALPHA_BREAKEVEN_TRIGGER_R × initial_risk in its
+    # favour (measured by candle High/Low for intrabar detection), raise the
+    # effective stop-loss to entry price. Converts a potential loss to breakeven.
+    entry_price  = float(position.get("entry_price", sl))
+    initial_risk = abs(entry_price - sl)
+
+    # 1. Target (use candle High/Low for intrabar detection — same as ORB strategy)
+    if direction == "BUY"  and candle_h >= target:
         return "TARGET"
-    if direction == "SELL" and close <= target:
+    if direction == "SELL" and candle_l <= target:
         return "TARGET"
 
-    # 2. Stop-loss
-    if direction == "BUY"  and close <= sl:
-        return "STOP_LOSS"
-    if direction == "SELL" and close >= sl:
-        return "STOP_LOSS"
+    # 2. Stop-loss with breakeven upgrade
+    if direction == "BUY":
+        if initial_risk > 0 and candle_h >= entry_price + ALPHA_BREAKEVEN_TRIGGER_R * initial_risk:
+            effective_sl = max(sl, entry_price)   # raise SL to entry (breakeven)
+        else:
+            effective_sl = sl
+        if candle_l <= effective_sl:
+            return "STOP_LOSS"
+
+    else:  # SELL
+        if initial_risk > 0 and candle_l <= entry_price - ALPHA_BREAKEVEN_TRIGGER_R * initial_risk:
+            effective_sl = min(sl, entry_price)   # lower SL to entry (breakeven)
+        else:
+            effective_sl = sl
+        if candle_h >= effective_sl:
+            return "STOP_LOSS"
 
     # 3. Alpha score reversal
     scores = compute_all_signals(df, momentum_lookback=ALPHA_MOMENTUM_LOOKBACK)

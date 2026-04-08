@@ -126,20 +126,25 @@ def orb_score(row: pd.Series) -> float:
 # Signal 2: GAP — Opening gap direction (institutional/behavioural bias)
 # ---------------------------------------------------------------------------
 
-def gap_score(row: pd.Series) -> float:
+def gap_score(row: pd.Series, session_elapsed_min: float = 0.0) -> float:
     """
-    Gap between today's opening price and yesterday's close.
+    Gap between today's opening price and yesterday's close, with time decay.
 
     This captures the net effect of overnight institutional positioning,
-    futures carry, and news events processed outside cash hours. The gap
-    direction tends to persist as an intraday bias as late-movers align.
+    futures carry, and news events processed outside cash hours.
 
-    Scaling: 1% gap up → tanh(1) ≈ +0.76; 2% gap → +0.96.
+    TIME DECAY — the gap loses relevance as the session progresses:
+      At 9:15 IST (session open, t=0):    weight = 1.0  (full strength)
+      At 12:00 IST (165 min in):          weight = 0.30 (30% residual)
+      After 12:00 IST:                    weight = 0.30 (floors there)
 
-    Independence: uses prev_day_close and day_open — both are purely
-    pre-session prices unavailable to any intrabar signal.
+    Scaling: 1% gap up at open → tanh(1) ≈ +0.76; same gap at 12:00 → +0.23.
 
-    IC proxy: 0.08 — second-strongest at open; weakens post-midday.
+    Independence: uses prev_day_close and day_open — purely pre-session prices
+    unavailable to any intrabar signal.
+
+    IC proxy: 0.08 at open; effectively ~0.024 by midday.
+    Category: Behavioural Bias / Institutional Flow
     """
     prev_close = row.get(PREV_DAY_CLOSE_COL)
     day_open   = row.get(DAY_OPEN_COL)
@@ -147,8 +152,13 @@ def gap_score(row: pd.Series) -> float:
     if pd.isna(prev_close) or pd.isna(day_open) or float(prev_close) <= 0:
         return 0.0
 
-    gap_pct = (float(day_open) - float(prev_close)) / float(prev_close)
-    return _tanh_scale(gap_pct, scale=100.0)
+    gap_pct   = (float(day_open) - float(prev_close)) / float(prev_close)
+    raw_score = _tanh_scale(gap_pct, scale=100.0)
+
+    # Linear decay from 1.0 → 0.30 over 165 min (9:15 to 12:00), then floors
+    decay = max(0.30, 1.0 - 0.70 * min(session_elapsed_min, 165.0) / 165.0)
+
+    return raw_score * decay
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +335,9 @@ def compute_all_signals(df: pd.DataFrame, momentum_lookback: int = 10) -> dict:
     Returns a dict mapping signal name → float score ∈ [-1.0, +1.0].
     Missing data produces 0.0 (neutral) — never excludes an observation.
 
+    The gap signal automatically applies time decay using the timestamp of
+    the signal candle (iloc[-2]) relative to 9:15 IST (session start).
+
     Parameters
     ----------
     df : pd.DataFrame
@@ -341,9 +354,18 @@ def compute_all_signals(df: pd.DataFrame, momentum_lookback: int = 10) -> dict:
     row      = df.iloc[-2]   # last completed candle
     prev_row = df.iloc[-3]   # prior candle (for volume_pressure direction)
 
+    # Compute session elapsed minutes for gap signal time decay.
+    # Uses the signal candle's timestamp; falls back to 0 if not available.
+    session_elapsed_min = 0.0
+    try:
+        ts = df.index[-2]
+        session_elapsed_min = max(0.0, (ts.hour * 60 + ts.minute) - 9 * 60 - 15)
+    except Exception:
+        pass
+
     return {
         "orb":             orb_score(row),
-        "gap":             gap_score(row),
+        "gap":             gap_score(row, session_elapsed_min=session_elapsed_min),
         "vwap_deviation":  vwap_deviation_score(row),
         "ema_trend":       ema_trend_score(row),
         "momentum":        momentum_score(df, lookback=momentum_lookback),

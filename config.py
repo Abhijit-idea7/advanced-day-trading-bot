@@ -203,11 +203,22 @@ ALPHA_ENTRY_THRESHOLD   = 0.30
 # At threshold=0.30, we need a weighted majority of signals pointing in the
 # same direction with meaningful strength. Raising this to 0.40 reduces
 # trade frequency but improves average quality (higher IC bar per trade).
+# NOTE: this is the default; regime filter overrides it dynamically.
 
-ALPHA_EXIT_THRESHOLD    = 0.25
+ALPHA_EXIT_THRESHOLD    = 0.15
 # Alpha score reversal magnitude that triggers ALPHA_EXIT.
-# Slightly lower than ALPHA_ENTRY_THRESHOLD so we exit before a full reversal
-# signal would trigger a new opposing trade.
+# Lowered from 0.25 → 0.15 based on backtest: ALPHA_EXIT fired only 2/300
+# times at 0.25 (threshold was too high to be useful).
+# At 0.15 it fires earlier when signals genuinely reverse, providing
+# a faster exit than waiting for price to hit the stop-loss.
+
+ALPHA_BREAKEVEN_TRIGGER_R = 0.6
+# Move stop-loss to breakeven (entry price) once the trade gains
+# ALPHA_BREAKEVEN_TRIGGER_R × initial_risk in its favour.
+# e.g. entry=100, SL=96 (risk=4). Once price reaches 102.40 (entry + 0.6×4),
+# effective SL is raised to 100. Converts a potential loss into breakeven.
+# Based on backtest: 160/300 exits were STOP_LOSS; breakeven stop should
+# convert ~20-30 of those into zero-loss outcomes.
 
 ALPHA_ATR_LOOKBACK      = 14
 # Candles for ATR computation (matches RSI_PERIOD for consistency).
@@ -232,3 +243,34 @@ ALPHA_ENTRY_CUTOFF_TIME = "13:00"
 
 ALPHA_MOMENTUM_LOOKBACK = 10
 # Candles for the momentum signal rate-of-change calculation (10 × 2 min = 20 min).
+
+# ---------------------------------------------------------------------------
+# NIFTY50 Market Regime Filter Parameters
+# ---------------------------------------------------------------------------
+# The regime filter detects intraday NIFTY50 direction and adjusts:
+#   - Maximum simultaneous positions (reduces exposure on bear days)
+#   - Alpha entry threshold (higher quality bar when market is bearish)
+#   - Direction filter (LONG_ONLY / SHORT_ONLY / BOTH)
+#
+# Based on backtest analysis: 9/30 days had ≤20% win rate and lost ~Rs15,700.
+# A regime filter targeting those bear days can approximate doubling net P&L.
+
+REGIME_BULL_THRESHOLD = 0.20
+# NIFTY score above this → BULL regime.
+# Score = weighted avg of (VWAP position, EMA trend, day change) ∈ [-1, +1].
+
+REGIME_BEAR_THRESHOLD = -0.20
+# NIFTY score below this → BEAR regime.
+
+REGIME_BEAR_MAX_POSITIONS    = 4
+# Max simultaneous open positions in BEAR regime (vs 10 normally).
+# Reduces capital at risk when broad market is unfavourable.
+
+REGIME_NEUTRAL_MAX_POSITIONS = 8
+# Max positions in NEUTRAL regime (between BULL and BEAR).
+
+REGIME_BEAR_ALPHA_THRESHOLD    = 0.42
+# Stricter entry threshold in BEAR regime: only very high-conviction trades.
+
+REGIME_NEUTRAL_ALPHA_THRESHOLD = 0.33
+# Slightly stricter in NEUTRAL (vs 0.30 default in BULL).
