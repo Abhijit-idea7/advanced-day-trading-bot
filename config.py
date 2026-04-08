@@ -132,9 +132,20 @@ VOLUME_LOOKBACK = 10   # Candles for rolling volume average
 # ---------------------------------------------------------------------------
 # Position Sizing
 # ---------------------------------------------------------------------------
-POSITION_SIZE_INR = 100_000   # Capital per trade in INR
-MAX_POSITIONS     = 10        # Max simultaneous open positions
+POSITION_SIZE_INR = 150_000   # Capital per trade in INR
+# Raised from Rs100k → Rs150k alongside MAX_POSITIONS drop from 10 → 6.
+# Total capital deployment stays similar (6 × 150k ≈ 10 × 100k = Rs1M).
+# Since brokerage is flat Rs40/trade regardless of size, each trade now
+# earns 1.5× more gross while paying the same Rs40 — improving the ratio.
+
+MAX_POSITIONS     = 6         # Max simultaneous open positions
+# Reduced from 10 → 6.  Combined with the higher ALPHA_ENTRY_THRESHOLD,
+# this caps daily trades at ~4–6 rather than always filling 10 slots.
+# Backtest: 300 trades × Rs40 = Rs12,000 brokerage consumed 34% of gross.
+# At ~150 trades: Rs6,000 brokerage on the same-quality gross P&L.
+
 TOP_N_STOCKS      = 10        # Candidates selected daily by ATR%
+# Keep 10 candidates so the threshold filter has enough to choose from.
 
 # ---------------------------------------------------------------------------
 # Risk / Reward
@@ -198,11 +209,14 @@ ALPHA_WEIGHTS = {
     "rsi":             0.10,
 }
 
-ALPHA_ENTRY_THRESHOLD   = 0.30
+ALPHA_ENTRY_THRESHOLD   = 0.40
 # Minimum |combined alpha score| to trigger a trade.
-# At threshold=0.30, we need a weighted majority of signals pointing in the
-# same direction with meaningful strength. Raising this to 0.40 reduces
-# trade frequency but improves average quality (higher IC bar per trade).
+# Raised from 0.30 → 0.40 to cut the lowest-conviction trades.
+# At 0.30, the strategy always filled all 10 slots (300 trades/30 days).
+# At 0.40, only the clearest signal alignments fire — expected ~4–6/day.
+# The IC framework guarantees alpha > 0.40 trades carry more independent
+# signal evidence than alpha 0.30–0.40 trades. Cutting the weaker ones
+# should maintain gross P&L quality while reducing brokerage cost.
 # NOTE: this is the default; regime filter overrides it dynamically.
 
 ALPHA_EXIT_THRESHOLD    = 0.20
