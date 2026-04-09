@@ -95,6 +95,7 @@ from config import (
     ORB_MAX_RANGE_PCT,
     ORB_MIN_GAP_PCT,
     ORB_MIN_RANGE_PCT,
+    ORB_POSITION_SCALE,
     ORB_TARGET_MULTIPLIER,
     ORB_VOLUME_MULTIPLIER,
 )
@@ -217,7 +218,7 @@ def generate_signal(df: pd.DataFrame, symbol: str = "", sim_time=None) -> dict:
             f"entry={close:.2f} sl={sl:.2f} target={target:.2f} "
             f"R:R={rr:.1f} risk=Rs{risk:.2f} vol={vol_ratio:.2f}x gap={gap_pct:+.2%}"
         )
-        return {"action": "BUY", "sl": sl, "target": target, "strategy": STRATEGY_NAME}
+        return {"action": "BUY", "sl": sl, "target": target, "strategy": STRATEGY_NAME, "quantity_scale": ORB_POSITION_SCALE}
 
     # ---- SHORT: breakdown below ORB low ----
     if close < orb_low:
@@ -248,7 +249,7 @@ def generate_signal(df: pd.DataFrame, symbol: str = "", sim_time=None) -> dict:
             f"entry={close:.2f} sl={sl:.2f} target={target:.2f} "
             f"R:R={rr:.1f} risk=Rs{risk:.2f} vol={vol_ratio:.2f}x gap={gap_pct:+.2%}"
         )
-        return {"action": "SELL", "sl": sl, "target": target, "strategy": STRATEGY_NAME}
+        return {"action": "SELL", "sl": sl, "target": target, "strategy": STRATEGY_NAME, "quantity_scale": ORB_POSITION_SCALE}
 
     return _HOLD
 

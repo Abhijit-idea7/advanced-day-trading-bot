@@ -177,8 +177,8 @@ def rank_by_atr(symbol_dfs: dict, date_: datetime.date) -> list[str]:
     return sorted(scores, key=lambda s: scores[s], reverse=True)[:TOP_N_STOCKS]
 
 
-def calculate_quantity(price: float) -> int:
-    return int(POSITION_SIZE_INR // price) if price > 0 else 0
+def calculate_quantity(price: float, scale: float = 1.0) -> int:
+    return int(POSITION_SIZE_INR * scale // price) if price > 0 else 0
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +323,7 @@ def simulate_day(
                     # matching the live bot which also uses iloc[-2] close.
                     # Previously used iloc[-1] (the forming candle) — wrong.
                     entry_price = float(df_slice.iloc[-1]["Close"])
-                    quantity    = calculate_quantity(entry_price)
+                    quantity    = calculate_quantity(entry_price, scale=signal.get("quantity_scale", 1.0))
                     if quantity < 1:
                         continue   # Bug fix #4: was `break` — skipped ALL strategies
                                    # for this symbol; changed to `continue` so the

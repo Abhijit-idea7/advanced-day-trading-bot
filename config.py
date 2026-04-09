@@ -77,6 +77,12 @@ ORB_MIN_GAP_PCT = 0.002
 # Open >0.2% above prev close → bullish bias → LONG ORB only.
 # Open >0.2% below prev close → bearish bias → SHORT ORB only.
 # Within ±0.2% → flat open → both directions allowed (VWAP decides).
+
+ORB_POSITION_SCALE = 1.5
+# ORB signals use 1.5× normal position size (Rs150k → Rs225k per trade).
+# Justified by backtest data: ORB earns ~64% more net P&L per trade than
+# ALPHA_COMBO (Rs213 vs Rs130 per trade) due to structural edge of confirmed
+# volume breakouts. Higher conviction = larger allocation.
 # This is the single biggest win-rate improvement in the strategy.
 
 ORB_FAILED_BUFFER_PCT = 0.008
