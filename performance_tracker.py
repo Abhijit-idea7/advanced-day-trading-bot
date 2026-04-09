@@ -17,7 +17,7 @@ import pytz
 
 logger   = logging.getLogger(__name__)
 IST      = pytz.timezone("Asia/Kolkata")
-LOG_FILE = Path("performance_log.csv")
+_DEFAULT_LOG_FILE = Path("performance_log.csv")
 
 CSV_FIELDS = [
     "date", "symbol", "strategy",
@@ -43,8 +43,9 @@ class TradeRecord:
 
 
 class PerformanceTracker:
-    def __init__(self) -> None:
+    def __init__(self, log_file: str | None = None) -> None:
         self.trades: list[TradeRecord] = []
+        self._log_file = Path(log_file) if log_file else _DEFAULT_LOG_FILE
 
     def record_trade(
         self,
@@ -170,8 +171,8 @@ class PerformanceTracker:
             logger.info("[PERF] No trades to save.")
             return
 
-        file_exists = LOG_FILE.exists()
-        with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
+        file_exists = self._log_file.exists()
+        with open(self._log_file, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
             if not file_exists:
                 writer.writeheader()
@@ -190,4 +191,4 @@ class PerformanceTracker:
                     "exit_reason": t.exit_reason,
                 })
 
-        logger.info(f"[PERF] {len(self.trades)} trade(s) saved to {LOG_FILE}")
+        logger.info(f"[PERF] {len(self.trades)} trade(s) saved to {self._log_file}")

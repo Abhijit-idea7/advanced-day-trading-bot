@@ -3,16 +3,20 @@ main.py
 -------
 Multi-strategy intraday trading bot entry point.
 
-Supported strategies (configure via ACTIVE_STRATEGY in config.py or env var):
+Supported strategies (configure via --strategy arg or ACTIVE_STRATEGY env var):
   ORB         — Opening Range Breakout  (fires 9:30–11:00 IST)
   VWAP_EMA    — VWAP + 9/20 EMA Pullback  (fires 9:20–12:30 IST)
   COMBINED    — ORB and VWAP_EMA simultaneously, first signal wins per symbol
   ALPHA_COMBO — 7-signal IC-weighted ensemble (fires 9:20–13:00 IST)
-                Implements the Fundamental Law of Active Management:
-                IR = IC × sqrt(N) across 7 independent alpha signals.
+  ALPHA_ORB   — ORB morning breakouts + ALPHA_COMBO midday, shared position pool
+
+Production default (trading.yml): runs ORB and ALPHA_COMBO as TWO separate
+parallel processes, each with its own independent position pool and log file:
+  python main.py --strategy ORB         → performance_log_ORB.csv
+  python main.py --strategy ALPHA_COMBO → performance_log_ALPHA_COMBO.csv
 
 Lifecycle (runs as a single long-lived process via GitHub Actions):
-  1. GitHub Actions cron starts the runner at 03:15 UTC = 08:45 IST
+  1. GitHub Actions cron starts the runner at 01:00 UTC = 06:30 IST
   2. Script waits in 30-second poll until TRADE_START_TIME (09:20 IST)
   3. Selects today's top candidates by ATR% volatility ranking
   4. Loop every 2 minutes between 09:20 and 15:15 IST:
@@ -20,10 +24,29 @@ Lifecycle (runs as a single long-lived process via GitHub Actions):
        b. Scan candidates for new entry signals (all active strategies)
   5. At 15:15 IST: force-close all open positions (SQUARE_OFF)
   6. If ALPHA_COMBO: update IC-based signal weights from today's trade data
-  7. Print daily P&L summary and save to performance_log.csv
+  7. Print daily P&L summary and save to performance_log_<STRATEGY>.csv
   8. CSV is committed back to the repo by the GitHub Actions workflow step
 """
 
+# ---------------------------------------------------------------------------
+# IMPORTANT: parse --strategy and set os.environ BEFORE any other imports.
+# config.py reads ACTIVE_STRATEGY from os.environ at import time, so this
+# must happen first so both this process and all imported modules see the
+# correct strategy name.
+# ---------------------------------------------------------------------------
+import argparse as _argparse
+import os as _os
+import sys as _sys
+
+_parser = _argparse.ArgumentParser(add_help=False)
+_parser.add_argument("--strategy", type=str, default=None)
+_early_args, _ = _parser.parse_known_args()
+if _early_args.strategy:
+    _os.environ["ACTIVE_STRATEGY"] = _early_args.strategy.upper()
+
+# ---------------------------------------------------------------------------
+# Standard imports — config is now imported with the correct ACTIVE_STRATEGY
+# ---------------------------------------------------------------------------
 import logging
 import time
 from datetime import datetime
@@ -305,13 +328,15 @@ def run() -> None:
     candidates = get_top_candidates()
     logger.info(f"Watchlist: {candidates}")
 
+    # Strategy-specific log file so parallel processes don't conflict
+    log_file = f"performance_log_{ACTIVE_STRATEGY}.csv"
     tracker      = TradeTracker()
-    perf         = PerformanceTracker()
+    perf         = PerformanceTracker(log_file=log_file)
     closed_today: set = set()
 
     # Main strategy loop — runs every LOOP_SLEEP_SECONDS seconds
     while True:
-        logger.info(f"--- Loop tick at {current_time_str()} IST ---")
+        logger.info(f"--- Loop tick at {current_time_str()} IST [{ACTIVE_STRATEGY}] ---")
 
         # Hard square-off gate
         if is_past(SQUARE_OFF_TIME):
