@@ -1,0 +1,101 @@
+name: Intraday Trading Bot
+
+# -----------------------------------------------------------------------
+# Cron fires at 01:00 UTC = 06:30 IST (2h50m before trade start).
+#
+# WHY SO EARLY? GitHub Actions free-tier runners are heavily loaded on
+# weekday mornings (01:00–06:00 UTC). Jobs scheduled at 03:15 UTC can
+# sit in queue for 1–2+ hours, causing the runner to start at 10:45+ IST
+# (well after the 09:20 IST trading window opens).
+#
+# By scheduling at 01:00 UTC = 06:30 IST, the job reaches the front of
+# the queue before the morning rush. Even with a 2-hour delay, the runner
+# starts by 08:30 IST — well before the 09:20 IST trading window.
+#
+# The bot handles the pre-market wait internally:
+#   → polls every 30 seconds until 09:20 IST (TRADE_START_TIME)
+#   → then selects candidates and starts the strategy loop
+#
+# Timeout: 540 minutes covers 06:30 → 15:30 IST with buffer.
+#
+# ACTIVE_STRATEGY can be set as a GitHub Actions secret or env var:
+#   ORB         — Opening Range Breakout
+#   VWAP_EMA    — VWAP + 9/20 EMA Pullback
+#   COMBINED    — ORB + VWAP_EMA simultaneously
+#   ALPHA_COMBO — 7-signal IC-weighted ensemble (default)
+#   ALPHA_ORB   — ORB morning breakouts + ALPHA_COMBO midday (recommended)
+# -----------------------------------------------------------------------
+
+on:
+  schedule:
+    - cron: "0 1 * * 1-5"    # Mon–Fri, 06:30 IST (early queue to beat runner backlog)
+  workflow_dispatch:           # Manual trigger from GitHub Actions UI
+    inputs:
+      strategy:
+        description: "Active strategy (ORB / VWAP_EMA / COMBINED / ALPHA_COMBO / ALPHA_ORB)"
+        required: false
+        default: "ALPHA_ORB"
+
+# -----------------------------------------------------------------------
+# Concurrency: only ONE run of this workflow at a time.
+# If a second run starts (e.g. manual trigger while cron is already live),
+# the NEW run is cancelled immediately — the already-running bot continues.
+# This prevents duplicate orders and conflicting log file commits.
+# -----------------------------------------------------------------------
+concurrency:
+  group: trading-bot
+  cancel-in-progress: false   # Cancel the NEW run, keep the existing one
+
+# -----------------------------------------------------------------------
+# Permissions: grant write access so the bot can push performance_log.csv
+# back to the repository after each session.
+# -----------------------------------------------------------------------
+permissions:
+  contents: write
+
+jobs:
+  trade:
+    name: Run Trading Bot
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    timeout-minutes: 540
+
+    steps:
+      # 1. Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Set up Python
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # 3. Install dependencies
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # 4. Run the bot
+      #    Secrets stored in: repo Settings → Secrets and variables → Actions
+      #    ACTIVE_STRATEGY can be overridden via workflow_dispatch input
+      - name: Run trading bot
+        env:
+          STOCKSDEVELOPER_API_KEY: ${{ secrets.STOCKSDEVELOPER_API_KEY }}
+          STOCKSDEVELOPER_ACCOUNT: ${{ secrets.STOCKSDEVELOPER_ACCOUNT }}
+          ACTIVE_STRATEGY: ${{ github.event.inputs.strategy || secrets.ACTIVE_STRATEGY || 'ALPHA_ORB' }}
+        run: python main.py
+
+      # 5. Commit performance_log.csv back to repo
+      #    Runs even if the bot exits early (if: always()) so no data is lost.
+      - name: Save performance log to repo
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add performance_log.csv 2>/dev/null || true
+          git diff --staged --quiet && echo "No new trades to commit." || \
+            git commit -m "perf: trading log $(date -u '+%Y-%m-%d')" && \
+            git push origin HEAD:${{ github.ref_name }}
