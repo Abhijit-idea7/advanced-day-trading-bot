@@ -1,47 +1,53 @@
 name: Intraday Trading Bot
 
 # -----------------------------------------------------------------------
-# Cron fires at 03:15 UTC = 08:45 IST (35 min before trade start).
-# GitHub Actions scheduled runs can be delayed 15–30 min during peak hours.
-# Starting early ensures the runner is live well before 09:20 IST when
-# the Python script begins trading.
+# Cron fires at 01:00 UTC = 06:30 IST (2h50m before trade start).
 #
-# The bot handles the wait internally:
+# WHY SO EARLY? GitHub Actions free-tier runners are heavily loaded on
+# weekday mornings (01:00–06:00 UTC). Jobs scheduled at 03:15 UTC can
+# sit in queue for 1–2+ hours, causing the runner to start at 10:45+ IST
+# (well after the 09:20 IST trading window opens).
+#
+# By scheduling at 01:00 UTC = 06:30 IST, the job reaches the front of
+# the queue before the morning rush. Even with a 2-hour delay, the runner
+# starts by 08:30 IST — well before the 09:20 IST trading window.
+#
+# The bot handles the pre-market wait internally:
 #   → polls every 30 seconds until 09:20 IST (TRADE_START_TIME)
 #   → then selects candidates and starts the strategy loop
 #
-# Timeout: 390 minutes covers 08:45 → 15:30 IST with buffer.
+# PARALLEL EXECUTION: ORB and ALPHA_COMBO run as two independent processes:
+#   python main.py --strategy ORB         → performance_log_ORB.csv
+#   python main.py --strategy ALPHA_COMBO → performance_log_ALPHA_COMBO.csv
 #
-# ACTIVE_STRATEGY can be set as a GitHub Actions secret or env var:
-#   ORB         — Opening Range Breakout
-#   VWAP_EMA    — VWAP + 9/20 EMA Pullback
-#   COMBINED    — ORB + VWAP_EMA simultaneously
-#   ALPHA_COMBO — 7-signal IC-weighted ensemble (default)
-#   ALPHA_ORB   — ORB morning breakouts + ALPHA_COMBO midday (recommended)
+#   Each has its own position pool, TradeTracker, and log file.
+#   ORB uses 1.5× position size (Rs225k); ALPHA_COMBO uses 1.0× (Rs150k).
+#   The same stock CAN be traded by both simultaneously.
+#
+# Timeout: 540 minutes covers 06:30 → 15:30 IST with buffer.
 # -----------------------------------------------------------------------
 
 on:
   schedule:
-    - cron: "15 3 * * 1-5"   # Mon–Fri, 08:45 IST
+    - cron: "0 1 * * 1-5"    # Mon–Fri, 06:30 IST (early queue to beat runner backlog)
   workflow_dispatch:           # Manual trigger from GitHub Actions UI
     inputs:
       strategy:
-        description: "Active strategy (ORB / VWAP_EMA / COMBINED / ALPHA_COMBO / ALPHA_ORB)"
+        description: "Single strategy override (leave blank for default parallel run: ORB + ALPHA_COMBO)"
         required: false
-        default: "ALPHA_ORB"
+        default: ""
 
 # -----------------------------------------------------------------------
 # Concurrency: only ONE run of this workflow at a time.
 # If a second run starts (e.g. manual trigger while cron is already live),
 # the NEW run is cancelled immediately — the already-running bot continues.
-# This prevents duplicate orders and conflicting log file commits.
 # -----------------------------------------------------------------------
 concurrency:
   group: trading-bot
   cancel-in-progress: false   # Cancel the NEW run, keep the existing one
 
 # -----------------------------------------------------------------------
-# Permissions: grant write access so the bot can push performance_log.csv
+# Permissions: grant write access so the bot can push performance logs
 # back to the repository after each session.
 # -----------------------------------------------------------------------
 permissions:
@@ -54,7 +60,7 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-    timeout-minutes: 390
+    timeout-minutes: 540
 
     steps:
       # 1. Checkout code
@@ -72,24 +78,41 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # 4. Run the bot
-      #    Secrets stored in: repo Settings → Secrets and variables → Actions
-      #    ACTIVE_STRATEGY can be overridden via workflow_dispatch input
-      - name: Run trading bot
+      # 4. Run both strategies in parallel
+      #    ORB:         1.5× position size, fires 09:30–11:00 IST breakouts
+      #    ALPHA_COMBO: 1.0× position size, fires 09:20–13:00 IST IC-weighted signals
+      #    Each has its own TradeTracker and log file — no shared state.
+      #    If workflow_dispatch overrides strategy, run only that single strategy.
+      - name: Run trading strategies
         env:
           STOCKSDEVELOPER_API_KEY: ${{ secrets.STOCKSDEVELOPER_API_KEY }}
           STOCKSDEVELOPER_ACCOUNT: ${{ secrets.STOCKSDEVELOPER_ACCOUNT }}
-          ACTIVE_STRATEGY: ${{ github.event.inputs.strategy || secrets.ACTIVE_STRATEGY || 'ALPHA_ORB' }}
-        run: python main.py
+        run: |
+          OVERRIDE="${{ github.event.inputs.strategy }}"
+          if [ -n "$OVERRIDE" ]; then
+            echo "Manual override: running single strategy $OVERRIDE"
+            python main.py --strategy "$OVERRIDE"
+          else
+            echo "Running ORB and ALPHA_COMBO in parallel..."
+            python main.py --strategy ORB &
+            PID_ORB=$!
+            python main.py --strategy ALPHA_COMBO &
+            PID_ALPHA=$!
+            echo "ORB PID=$PID_ORB  ALPHA_COMBO PID=$PID_ALPHA"
+            wait $PID_ORB
+            wait $PID_ALPHA
+            echo "Both strategies completed."
+          fi
 
-      # 5. Commit performance_log.csv back to repo
+      # 5. Commit performance logs back to repo
       #    Runs even if the bot exits early (if: always()) so no data is lost.
-      - name: Save performance log to repo
+      - name: Save performance logs to repo
         if: always()
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add performance_log.csv 2>/dev/null || true
+          git add performance_log_ORB.csv performance_log_ALPHA_COMBO.csv \
+                  performance_log.csv 2>/dev/null || true
           git diff --staged --quiet && echo "No new trades to commit." || \
             git commit -m "perf: trading log $(date -u '+%Y-%m-%d')" && \
             git push origin HEAD:${{ github.ref_name }}
