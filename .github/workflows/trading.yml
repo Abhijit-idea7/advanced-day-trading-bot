@@ -1,20 +1,15 @@
 name: Intraday Trading Bot
 
 # -----------------------------------------------------------------------
-# Cron fires at 01:00 UTC = 06:30 IST (2h50m before trade start).
+# MANUAL TRIGGER ONLY — run this workflow from the GitHub Actions UI
+# each morning before 09:20 IST. The cron schedule was removed because
+# GitHub Actions free-tier runner queue delays (up to 2+ hours on weekday
+# mornings) caused the bot to start as late as 10:50 IST instead of 09:20.
 #
-# WHY SO EARLY? GitHub Actions free-tier runners are heavily loaded on
-# weekday mornings (01:00–06:00 UTC). Jobs scheduled at 03:15 UTC can
-# sit in queue for 1–2+ hours, causing the runner to start at 10:45+ IST
-# (well after the 09:20 IST trading window opens).
-#
-# By scheduling at 01:00 UTC = 06:30 IST, the job reaches the front of
-# the queue before the morning rush. Even with a 2-hour delay, the runner
-# starts by 08:30 IST — well before the 09:20 IST trading window.
-#
-# The bot handles the pre-market wait internally:
-#   → polls every 30 seconds until 09:20 IST (TRADE_START_TIME)
-#   → then selects candidates and starts the strategy loop
+# HOW TO START EACH MORNING:
+#   GitHub → Actions tab → "Intraday Trading Bot" → "Run workflow" button
+#   Start it any time before 09:20 IST. The bot waits internally until
+#   09:20 IST before selecting candidates and entering trades.
 #
 # PARALLEL EXECUTION: ORB and ALPHA_COMBO run as two independent processes:
 #   python main.py --strategy ORB         → performance_log_ORB.csv
@@ -24,13 +19,11 @@ name: Intraday Trading Bot
 #   ORB uses 1.5× position size (Rs225k); ALPHA_COMBO uses 1.0× (Rs150k).
 #   The same stock CAN be traded by both simultaneously.
 #
-# Timeout: 540 minutes covers 06:30 → 15:30 IST with buffer.
+# Timeout: 540 minutes — covers up to 9 hours from trigger time.
 # -----------------------------------------------------------------------
 
 on:
-  schedule:
-    - cron: "0 1 * * 1-5"    # Mon–Fri, 06:30 IST (early queue to beat runner backlog)
-  workflow_dispatch:           # Manual trigger from GitHub Actions UI
+  workflow_dispatch:           # Manual trigger only — start from GitHub Actions UI each morning
     inputs:
       strategy:
         description: "Single strategy override (leave blank for default parallel run: ORB + ALPHA_COMBO)"
