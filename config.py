@@ -175,7 +175,10 @@ DAILY_LOSS_CIRCUIT_BREAKER = -999_999
 # Set to -999,999 so it never triggers. Re-enable only if a smarter
 # consecutive-loss variant is implemented.
 TRADE_START_TIME   = "09:20"   # No entries before this IST time
-SQUARE_OFF_TIME    = "15:15"   # Force-close all positions at this IST time
+SQUARE_OFF_TIME    = "15:10"   # Force-close all positions at this IST time
+# Set to 15:10 (not 15:15) to give a 10-minute buffer before Zerodha's
+# MIS auto-square-off at ~15:20. This ensures the bot's orders reach
+# Zerodha while the market is still liquid and prices are representative.
 CANDLE_INTERVAL    = "2m"      # yfinance interval string
 LOOP_SLEEP_SECONDS = 120       # Sleep between strategy iterations (2 min candle)
 

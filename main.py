@@ -191,7 +191,14 @@ def square_off_all(
     perf:         PerformanceTracker,
     closed_today: set,
 ) -> None:
-    """Force-close every open position at SQUARE_OFF_TIME."""
+    """
+    Force-close every open position at SQUARE_OFF_TIME.
+
+    Retries each square_off() up to 3 times (5s apart) before giving up.
+    Even on failure the trade is recorded at last known price with reason
+    SQUARE_OFF_FAILED so P&L tracking remains consistent. Zerodha will
+    close the position via MIS auto-square-off at ~15:20 regardless.
+    """
     logger.info("=== SQUARE-OFF TIME: closing all open positions ===")
     for position in tracker.all_positions():
         try:
@@ -199,27 +206,47 @@ def square_off_all(
             exit_price = (
                 float(df["Close"].iloc[-2]) if df is not None else position.entry_price
             )
-            ok = square_off(position.symbol, position.direction, position.quantity)
-            if ok:
-                tracker.record_closed_pnl(
-                    position.entry_price, exit_price,
-                    position.quantity, position.direction,
+
+            # Retry up to 3 times — webhook can fail transiently
+            ok = False
+            for attempt in range(1, 4):
+                ok = square_off(position.symbol, position.direction, position.quantity)
+                if ok:
+                    break
+                logger.warning(
+                    f"{position.symbol}: square_off attempt {attempt}/3 failed"
+                    + (", retrying in 5s..." if attempt < 3 else " — giving up.")
                 )
-                tracker.remove_position(position.symbol)
-                closed_today.add(position.symbol)
-                perf.record_trade(
-                    symbol      = position.symbol,
-                    direction   = position.direction,
-                    entry_price = position.entry_price,
-                    exit_price  = exit_price,
-                    quantity    = position.quantity,
-                    entry_time  = position.entry_time,
-                    exit_reason = "SQUARE_OFF",
-                    strategy    = position.strategy_name,
+                if attempt < 3:
+                    time.sleep(5)
+
+            reason = "SQUARE_OFF" if ok else "SQUARE_OFF_FAILED"
+            if not ok:
+                logger.error(
+                    f"{position.symbol}: all square_off attempts failed. "
+                    f"Zerodha will close via MIS auto-square-off at ~15:20. "
+                    f"Recording P&L at last known price Rs{exit_price:.2f}."
                 )
+
+            tracker.record_closed_pnl(
+                position.entry_price, exit_price,
+                position.quantity, position.direction,
+            )
+            tracker.remove_position(position.symbol)
+            closed_today.add(position.symbol)
+            perf.record_trade(
+                symbol      = position.symbol,
+                direction   = position.direction,
+                entry_price = position.entry_price,
+                exit_price  = exit_price,
+                quantity    = position.quantity,
+                entry_time  = position.entry_time,
+                exit_reason = reason,
+                strategy    = position.strategy_name,
+            )
         except Exception as e:
             logger.error(f"Error squaring off {position.symbol}: {e}")
-    logger.info("All positions closed.")
+    logger.info("Square-off complete.")
 
 
 # ---------------------------------------------------------------------------
