@@ -387,16 +387,25 @@ def run() -> None:
             square_off_all(tracker, perf, closed_today)
             break
 
-        # 1. Fetch NIFTY50 market regime (used by ALPHA_COMBO for threshold + direction filter)
+        # 1. Fetch NIFTY50 market regime — active for ALL strategies:
+        #    ORB        : direction_filter gates trade direction each loop tick
+        #                 BULL  → LONG_ONLY  (block short breakdowns on bull days)
+        #                 BEAR  → SHORT_ONLY (block long breakouts on bear days)
+        #                 NEUTRAL → BOTH     (no restriction)
+        #    ALPHA_COMBO: also uses alpha_threshold and max_positions from regime
         regime = None
-        if "ALPHA_COMBO" in ACTIVE_STRATEGY.upper():
-            try:
-                from market_regime import get_nifty_regime
+        try:
+            from market_regime import get_nifty_regime
+            regime = get_nifty_regime()
+            if "ALPHA_COMBO" in ACTIVE_STRATEGY.upper():
                 from strategy_alpha_combo import set_regime
-                regime = get_nifty_regime()
                 set_regime(regime)
-            except Exception as e:
-                logger.warning(f"Regime fetch failed: {e} — proceeding with NEUTRAL defaults")
+            logger.info(
+                f"NIFTY regime: {regime['regime']} (score={regime['score']:+.3f})"
+                f" → direction_filter={regime['direction_filter']}"
+            )
+        except Exception as e:
+            logger.warning(f"Regime fetch failed: {e} — proceeding with NEUTRAL defaults")
 
         # 2. Check exits first (always before entries)
         if tracker.open_count() > 0:
