@@ -77,53 +77,44 @@ ACTIVE_STRATEGY = os.getenv("ACTIVE_STRATEGY", "ORB")
 # ---------------------------------------------------------------------------
 # ORB (Opening Range Breakout) Parameters
 # ---------------------------------------------------------------------------
-ORB_MINUTES = 15
+# All key ORB params can be overridden via environment variables so that
+# separate backtest workflows can test different configs without code changes.
+# ---------------------------------------------------------------------------
+ORB_MINUTES           = int(os.getenv("ORB_MINUTES",            "15"))
 # Opening range window: first ORB_MINUTES of the NSE session (9:15–9:30 IST).
+# Default 15 → range covers 9:15–9:29. Set to 5 for a tighter 9:15–9:19 range.
 
-ORB_VOLUME_MULTIPLIER = 1.3
+ORB_VOLUME_MULTIPLIER = float(os.getenv("ORB_VOLUME_MULTIPLIER", "1.3"))
 # Breakout candle must have volume >= this × 10-candle avg.
 
-ORB_MIN_RANGE_PCT = 0.003
+ORB_MIN_RANGE_PCT     = float(os.getenv("ORB_MIN_RANGE_PCT",     "0.003"))
 # Minimum ORB size as % of price (0.3%). Skips dead flat opens.
 
-ORB_MAX_RANGE_PCT = 0.04
+ORB_MAX_RANGE_PCT     = float(os.getenv("ORB_MAX_RANGE_PCT",     "0.04"))
 # Maximum ORB size as % of price (4%). Avoids extreme gap events.
 
-ORB_CHASE_LIMIT_PCT = 0.008
+ORB_CHASE_LIMIT_PCT   = float(os.getenv("ORB_CHASE_LIMIT_PCT",   "0.008"))
 # Don't enter if price has already moved >0.8% beyond the ORB level.
-# Entering close to the breakout level gives better R:R.
 
-ORB_TARGET_MULTIPLIER = 2.5
+ORB_TARGET_MULTIPLIER = float(os.getenv("ORB_TARGET_MULTIPLIER", "2.5"))
 # Target = entry ± (ORB range × this multiplier).
-# With SL at the other end of the range, a 40% win rate is profitable at 2.5×.
+# Default 2.5×. Backtest-1 tests 1.5× via env var.
 
-ORB_ENTRY_CUTOFF_TIME = "11:00"
-# No new ORB entries after 11:00 IST. Morning momentum window only.
+ORB_ENTRY_CUTOFF_TIME = os.getenv("ORB_ENTRY_CUTOFF_TIME",       "11:00")
+# No new ORB entries after this IST time. Default 11:00. Backtest-2 tests 12:00.
 
-ORB_MIN_GAP_PCT = 0.002
-# Gap-direction filter (Andrew Aziz "Gap-and-Go" rule).
-# Open >0.2% above prev close → bullish bias → LONG ORB only.
-# Open >0.2% below prev close → bearish bias → SHORT ORB only.
-# Within ±0.2% → flat open → both directions allowed (VWAP decides).
+ORB_MIN_GAP_PCT       = float(os.getenv("ORB_MIN_GAP_PCT",       "0.002"))
+# Gap-direction filter threshold (0.2%). See Gap-and-Go rule in strategy_orb.py.
 
-ORB_POSITION_SCALE = 1.5
+ORB_POSITION_SCALE    = float(os.getenv("ORB_POSITION_SCALE",    "1.5"))
 # ORB signals use 1.5× normal position size (Rs150k → Rs225k per trade).
-# Justified by backtest data: ORB earns ~64% more net P&L per trade than
-# ALPHA_COMBO (Rs213 vs Rs130 per trade) due to structural edge of confirmed
-# volume breakouts. Higher conviction = larger allocation.
-# This is the single biggest win-rate improvement in the strategy.
 
-ORB_FAILED_BUFFER_PCT = 0.008
+ORB_FAILED_BUFFER_PCT = float(os.getenv("ORB_FAILED_BUFFER_PCT", "0.008"))
 # How far back inside the ORB range triggers ORB_FAILED exit.
-# 0.8% buffer: gives trades room to retest the breakout level without exiting.
-# A shallow retest that holds above (orb_high × 0.992) is normal behaviour;
-# only a confirmed close significantly back inside signals a failed breakout.
+# Default 0.8%. Backtest-2 tests 0.5% for faster exit on failed breakouts.
 
-ORB_BREAKEVEN_TRIGGER_R = 0.6
-# Move SL to breakeven (entry price) once trade has gained 60% of initial risk.
-# Example: entry=100, SL=98 (risk=2). Once High >= 101.20 (entry + 0.6×2),
-# effective SL is raised to 100. Locks in a no-loss trade early without
-# requiring the full 2.5× target to be reached first.
+ORB_BREAKEVEN_TRIGGER_R = float(os.getenv("ORB_BREAKEVEN_TRIGGER_R", "0.6"))
+# Move SL to breakeven once trade gains this × initial risk. Default 60%.
 
 # ---------------------------------------------------------------------------
 # VWAP + EMA Pullback Parameters
