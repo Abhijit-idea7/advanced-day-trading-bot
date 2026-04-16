@@ -49,6 +49,8 @@ from config import (
     ORB_STOCK_UNIVERSE,
     ORB_TOP_N_STOCKS,
     POSITION_SIZE_INR,
+    REGIME_BEAR_THRESHOLD,
+    REGIME_BULL_THRESHOLD,
     STOCK_UNIVERSE,
     TOP_N_STOCKS,
 )
@@ -70,6 +72,7 @@ TRADE_START  = time(9, 20)
 SQUARE_OFF   = time(15, 15)
 BROKERAGE    = 40         # Rs20 × 2 legs per trade (Zerodha intraday)
 OUTPUT_CSV   = Path("backtest_results.csv")
+NIFTY_TICKER = "^NSEI"   # NIFTY50 index — no .NS suffix
 
 CSV_FIELDS = [
     "date", "symbol", "strategy", "direction",
@@ -185,14 +188,121 @@ def calculate_quantity(price: float, scale: float = 1.0) -> int:
 
 
 # ---------------------------------------------------------------------------
+# NIFTY Regime helpers (used when ORB_REGIME_FILTER=true)
+# ---------------------------------------------------------------------------
+def fetch_nifty_with_indicators() -> "pd.DataFrame | None":
+    """
+    Fetch ~59 days of 2-min NIFTY50 candles with indicators computed.
+    Uses ^NSEI (Yahoo Finance index ticker — no .NS suffix).
+    """
+    try:
+        df = yf.Ticker(NIFTY_TICKER).history(interval="2m", period="59d")
+        if df is None or df.empty:
+            logger.warning("NIFTY: empty response from yfinance")
+            return None
+        df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+        df.index = pd.to_datetime(df.index)
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC").tz_convert(IST)
+        else:
+            df.index = df.index.tz_convert(IST)
+        if len(df) < 30:
+            logger.warning(f"NIFTY: only {len(df)} candles — too few")
+            return None
+        df = add_indicators(df)
+        logger.info(f"NIFTY: {len(df)} candles fetched with indicators")
+        return df
+    except Exception as e:
+        logger.error(f"NIFTY fetch error: {e}")
+        return None
+
+
+def compute_day_regime(nifty_df: pd.DataFrame, date_) -> dict:
+    """
+    Classify the NIFTY regime for a given backtest date using data up to 10:00 IST.
+
+    Using 10:00 cutoff simulates what the live bot would see before most ORB entries
+    (ORB_ENTRY_CUTOFF_TIME = 11:00). This avoids look-ahead bias while still giving
+    a clear regime signal from the first 45 minutes of trading.
+
+    Scoring mirrors market_regime.py exactly:
+      VWAP position (0.40) + EMA 9 vs 50 trend (0.40) + Day change (0.20)
+      score > REGIME_BULL_THRESHOLD  → BULL  → LONG_ONLY
+      score < REGIME_BEAR_THRESHOLD  → BEAR  → SHORT_ONLY
+      else                           → NEUTRAL → BOTH
+    """
+    _neutral = {"regime": "NEUTRAL", "score": 0.0, "direction_filter": "BOTH"}
+
+    try:
+        day_df = nifty_df[nifty_df.index.date == date_]
+        if day_df.empty:
+            return _neutral
+
+        # Use data up to 10:00 IST — enough time for regime to establish but
+        # well before the 11:00 ORB entry cutoff.
+        cutoff_time = time(10, 0)
+        day_df = day_df[day_df.index.time <= cutoff_time]
+        if len(day_df) < 3:
+            return _neutral
+
+        row   = day_df.iloc[-1]   # last candle on or before 10:00 IST
+        close = float(row["Close"])
+
+        components: list = []
+        weights:    list = []
+
+        # Component 1: VWAP position (weight 0.40)
+        vwap = row.get("vwap")
+        if not pd.isna(vwap) and float(vwap) > 0:
+            vwap_dev = (close - float(vwap)) / float(vwap)
+            components.append(float(np.tanh(vwap_dev * 100)))
+            weights.append(0.40)
+
+        # Component 2: EMA 9 vs EMA 50 (weight 0.40)
+        ema9  = row.get("ema_fast")
+        ema50 = row.get("ema_macro")
+        if not any(pd.isna(x) for x in (ema9, ema50)):
+            components.append(1.0 if float(ema9) > float(ema50) else -1.0)
+            weights.append(0.40)
+
+        # Component 3: Day change from open (weight 0.20)
+        day_open = row.get("day_open")
+        if not pd.isna(day_open) and float(day_open) > 0:
+            day_chg = (close - float(day_open)) / float(day_open)
+            components.append(float(np.tanh(day_chg * 50)))
+            weights.append(0.20)
+
+        if not components:
+            return _neutral
+
+        total_w = sum(weights)
+        score   = float(np.clip(
+            sum(c * w / total_w for c, w in zip(components, weights)),
+            -1.0, 1.0
+        ))
+
+        if score > REGIME_BULL_THRESHOLD:
+            return {"regime": "BULL",    "score": score, "direction_filter": "LONG_ONLY"}
+        elif score < REGIME_BEAR_THRESHOLD:
+            return {"regime": "BEAR",    "score": score, "direction_filter": "SHORT_ONLY"}
+        else:
+            return {"regime": "NEUTRAL", "score": score, "direction_filter": "BOTH"}
+
+    except Exception as e:
+        logger.warning(f"compute_day_regime({date_}) error: {e} — using NEUTRAL")
+        return _neutral
+
+
+# ---------------------------------------------------------------------------
 # Single-day simulation
 # ---------------------------------------------------------------------------
 def simulate_day(
-    date_:         datetime.date,
-    candidates:    list[str],
-    symbol_dfs:    dict,
-    strategies:    list,
-    max_positions: int = MAX_POSITIONS,
+    date_:            datetime.date,
+    candidates:       list[str],
+    symbol_dfs:       dict,
+    strategies:       list,
+    max_positions:    int = MAX_POSITIONS,
+    direction_filter: str = "BOTH",
 ) -> list[BtTrade]:
     """
     Simulate a full trading day candle-by-candle across all candidates.
@@ -296,7 +406,7 @@ def simulate_day(
         circuit_tripped = daily_realized_pnl <= DAILY_LOSS_CIRCUIT_BREAKER
         if len(open_positions) < max_positions and not circuit_tripped:
             for symbol in candidates:
-                if len(open_positions) >= MAX_POSITIONS:
+                if len(open_positions) >= max_positions:   # fixed: was MAX_POSITIONS
                     break
                 if symbol in open_positions:
                     continue
@@ -321,6 +431,17 @@ def simulate_day(
                         df_slice, symbol=symbol, sim_time=ts
                     )
                     if signal["action"] not in ("BUY", "SELL"):
+                        continue
+
+                    # Regime direction filter: block counter-regime trades
+                    # BULL  → LONG_ONLY  → skip SELL signals
+                    # BEAR  → SHORT_ONLY → skip BUY signals
+                    # NEUTRAL → BOTH    → no restriction
+                    if direction_filter == "LONG_ONLY" and signal["action"] == "SELL":
+                        logger.info(f"{symbol} ORB: SELL blocked — BULL regime (LONG_ONLY)")
+                        continue
+                    if direction_filter == "SHORT_ONLY" and signal["action"] == "BUY":
+                        logger.info(f"{symbol} ORB: BUY blocked — BEAR regime (SHORT_ONLY)")
                         continue
 
                     # Bug fix #2: entry price from the signal candle (iloc[-2]),
@@ -479,15 +600,48 @@ def run(days: int, strategy_override: str | None = None) -> None:
     backtest_dates = all_dates[-days:]
     logger.info(f"Testing {len(backtest_dates)} days: {backtest_dates[0]} — {backtest_dates[-1]}")
 
+    # 2b. NIFTY regime filter (ORB only, opt-in via ORB_REGIME_FILTER=true)
+    import os as _os
+    use_regime = _os.getenv("ORB_REGIME_FILTER", "false").lower() == "true" and is_orb
+    day_regimes: dict = {}   # date → {"regime": str, "score": float, "direction_filter": str}
+
+    if use_regime:
+        logger.info("ORB_REGIME_FILTER=true — fetching NIFTY50 data for daily regime classification...")
+        nifty_df = fetch_nifty_with_indicators()
+        if nifty_df is not None:
+            for d in backtest_dates:
+                day_regimes[d] = compute_day_regime(nifty_df, d)
+            regime_counts: dict[str, int] = {}
+            for r in day_regimes.values():
+                lbl = r.get("regime", "NEUTRAL")
+                regime_counts[lbl] = regime_counts.get(lbl, 0) + 1
+            logger.info(f"Regime classification over {len(backtest_dates)} days: {regime_counts}")
+            print(f"\n  Regime filter ON — NIFTY classification at 10:00 IST: {regime_counts}")
+            print(f"  BULL → LONG_ONLY  |  BEAR → SHORT_ONLY  |  NEUTRAL → BOTH")
+        else:
+            logger.warning("NIFTY fetch failed — regime filter disabled, all days use BOTH")
+            use_regime = False
+
     # 3. Simulate
     all_trades: list[BtTrade] = []
-    print(f"\n  {'Date':12s}  {'Trades':>6}  {'Wins':>4}  {'Losses':>6}  {'Win%':>5}  {'Gross':>12}  {'Net':>12}")
-    print(f"  {'-' * 78}")
+    if use_regime:
+        print(f"\n  {'Date':12s}  {'Rgm':>4}  {'Trades':>6}  {'Wins':>4}  {'Losses':>6}  {'Win%':>5}  {'Gross':>12}  {'Net':>12}")
+        print(f"  {'-' * 84}")
+    else:
+        print(f"\n  {'Date':12s}  {'Trades':>6}  {'Wins':>4}  {'Losses':>6}  {'Win%':>5}  {'Gross':>12}  {'Net':>12}")
+        print(f"  {'-' * 78}")
 
     for date_ in backtest_dates:
+        regime         = day_regimes.get(date_, {"regime": "BOTH", "direction_filter": "BOTH"})
+        dir_filter     = regime.get("direction_filter", "BOTH")
+        regime_label   = regime.get("regime", "BOTH")[:4]   # BULL / BEAR / NEUT / BOTH
+
         candidates  = rank_by_atr(symbol_dfs, date_, top_n=bt_top_n)
-        day_trades  = simulate_day(date_, candidates, symbol_dfs, strategies,
-                                   max_positions=bt_max_positions)
+        day_trades  = simulate_day(
+            date_, candidates, symbol_dfs, strategies,
+            max_positions=bt_max_positions,
+            direction_filter=dir_filter,
+        )
         all_trades.extend(day_trades)
 
         if day_trades:
@@ -495,13 +649,23 @@ def run(days: int, strategy_override: str | None = None) -> None:
             n    = g - BROKERAGE * len(day_trades)
             wins = sum(1 for t in day_trades if t.pnl_inr > 0)
             wr   = wins / len(day_trades) * 100
-            print(
-                f"  {str(date_):12s}  {len(day_trades):>6d}  {wins:>4d}  "
-                f"{len(day_trades)-wins:>6d}  {wr:>4.0f}%  "
-                f"Rs{g:>+9,.0f}  Rs{n:>+9,.0f}"
-            )
+            if use_regime:
+                print(
+                    f"  {str(date_):12s}  {regime_label:>4s}  {len(day_trades):>6d}  {wins:>4d}  "
+                    f"{len(day_trades)-wins:>6d}  {wr:>4.0f}%  "
+                    f"Rs{g:>+9,.0f}  Rs{n:>+9,.0f}"
+                )
+            else:
+                print(
+                    f"  {str(date_):12s}  {len(day_trades):>6d}  {wins:>4d}  "
+                    f"{len(day_trades)-wins:>6d}  {wr:>4.0f}%  "
+                    f"Rs{g:>+9,.0f}  Rs{n:>+9,.0f}"
+                )
         else:
-            print(f"  {str(date_):12s}  {'—':>6}  {'—':>4}  {'—':>6}  {'—':>5}  {'Rs0':>12}  {'Rs0':>12}")
+            if use_regime:
+                print(f"  {str(date_):12s}  {regime_label:>4s}  {'—':>6}  {'—':>4}  {'—':>6}  {'—':>5}  {'Rs0':>12}  {'Rs0':>12}")
+            else:
+                print(f"  {str(date_):12s}  {'—':>6}  {'—':>4}  {'—':>6}  {'—':>5}  {'Rs0':>12}  {'Rs0':>12}")
 
     # 4. Summary + CSV
     print_overall_summary(
