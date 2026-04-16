@@ -1,0 +1,101 @@
+name: ORB Backtest — Test 3 (NIFTY Regime Filter)
+
+# -----------------------------------------------------------------------
+# TEST 3: Apply NIFTY market-regime filter to ORB entries.
+#
+# ALL OTHER PARAMS AT BASELINE (same as live trading config):
+#   ORB_MINUTES           : 15   (unchanged)
+#   ORB_TARGET_MULTIPLIER : 2.5  (unchanged)
+#   ORB_ENTRY_CUTOFF_TIME : 11:00 (unchanged)
+#   ORB_FAILED_BUFFER_PCT : 0.008 (unchanged)
+#
+# CHANGE: ORB_REGIME_FILTER=true
+#   At the start of each backtest day, NIFTY50 data up to 10:00 IST is
+#   scored on three components (VWAP position, EMA9 vs EMA50, day change).
+#   The resulting regime restricts ORB trade direction:
+#
+#     BULL  (score > +0.20) → LONG_ONLY
+#       Only ORB upside breakouts are taken. Short breakdowns blocked.
+#       Rationale: on bull days, short ORBs have low follow-through.
+#
+#     BEAR  (score < -0.20) → SHORT_ONLY
+#       Only ORB downside breakdowns are taken. Long breakouts blocked.
+#       Rationale: the three worst ORB days (Apr 2, Mar 20, Mar 11) were
+#       all BEAR days with NIFTY falling hard. Long breakouts failed
+#       en masse. This filter should save most of Rs35,000+ lost on those
+#       three days without touching profitable NEUTRAL/BULL days.
+#
+#     NEUTRAL (−0.20 to +0.20) → BOTH directions allowed (unchanged)
+#
+# HYPOTHESIS:
+#   Baseline: 150 trades, 48.7% win, Rs+68,532 net
+#   If regime blocks ~30 losing LONG trades on 3 bear days,
+#   and those 30 trades averaged -Rs500 each = Rs+15,000 saved.
+#   Net target: Rs+80,000–85,000 (17–24% improvement).
+#
+# HOW TO RUN:
+#   GitHub → Actions → "ORB Backtest — Test 3 ..." → Run workflow
+#
+# COMPARE against baseline result: 150 trades, Rs+68,532 net, Rs+457/trade
+# -----------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Trading days to backtest (1–59, default 30)"
+        required: false
+        default: "30"
+
+jobs:
+  backtest:
+    name: ORB Test 3 — NIFTY Regime Filter
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run ORB backtest — NIFTY Regime Filter
+        env:
+          STOCKSDEVELOPER_API_KEY: "backtest-dummy-key"
+          STOCKSDEVELOPER_ACCOUNT: "backtest"
+          ACTIVE_STRATEGY: "ORB"
+          # ── Test 3 change ──────────────────────────────────────────
+          ORB_REGIME_FILTER: "true"      # NIFTY regime gates ORB direction
+          # ── All other params at baseline ───────────────────────────
+          ORB_MINUTES: "15"
+          ORB_ENTRY_CUTOFF_TIME: "11:00"
+          ORB_FAILED_BUFFER_PCT: "0.008"
+          ORB_TARGET_MULTIPLIER: "2.5"
+        run: |
+          echo "=== ORB BACKTEST TEST 3 ==="
+          echo "ORB_REGIME_FILTER     : true  (NEW — NIFTY regime gates direction)"
+          echo "ORB_TARGET_MULTIPLIER : 2.5   (unchanged)"
+          echo "ORB_MINUTES           : 15    (unchanged)"
+          echo "ORB_ENTRY_CUTOFF_TIME : 11:00 (unchanged)"
+          echo "ORB_FAILED_BUFFER_PCT : 0.008 (unchanged)"
+          echo "Regime logic: BULL→LONG_ONLY | BEAR→SHORT_ONLY | NEUTRAL→BOTH"
+          echo "=========================================="
+          python backtest.py \
+            --strategy ORB \
+            --days "${{ github.event.inputs.days }}"
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: orb-test3-regime-filter-${{ github.event.inputs.days }}d
+          path: backtest_results.csv
+          retention-days: 30
