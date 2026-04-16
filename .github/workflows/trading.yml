@@ -1,112 +1,82 @@
-name: Intraday Trading Bot
+name: Intraday Trading Bot — ORB
 
 # -----------------------------------------------------------------------
-# MANUAL TRIGGER ONLY — GitHub Actions caps hosted runners at 6 hours
-# (360 minutes) regardless of timeout-minutes. To cover the full trading
-# session including the 15:10 IST square-off:
+# MANUAL TRIGGER — click "Run workflow" each morning at 09:10 IST.
 #
-#   ► TRIGGER THIS WORKFLOW AT EXACTLY 09:10 IST EACH MORNING ◄
+#   09:10 IST trigger + 6-hour GitHub hard cap = 15:10 IST.
+#   The bot waits internally until 09:20 IST before trading starts,
+#   then squares off all positions at 15:10 IST automatically.
 #
-#   09:10 IST + 6 hours = 15:10 IST = square-off time. Perfect fit.
-#   The bot waits internally until 09:20 IST before trading starts.
+# STRATEGY: ORB (Opening Range Breakout) with NIFTY Regime Filter
+#   • Universe   : 32 stocks (top 15/day by ATR%)
+#   • Position   : Rs 2,25,000 per trade (1.5× base, up to 5 simultaneous)
+#   • Entry window: 09:30 – 11:00 IST
+#   • NIFTY BULL → LONG breakouts only
+#   • NIFTY BEAR → SHORT breakdowns only
+#   • NIFTY NEUTRAL → both directions
 #
-# HOW TO START:
-#   GitHub → Actions tab → "Intraday Trading Bot" → "Run workflow" button
-#   Click at 09:10 IST. Leave the strategy field blank for parallel mode.
-#
-# PARALLEL EXECUTION: ORB and ALPHA_COMBO run as two independent processes:
-#   python main.py --strategy ORB         → performance_log_ORB.csv
-#   python main.py --strategy ALPHA_COMBO → performance_log_ALPHA_COMBO.csv
-#
-#   ORB  : 33-stock universe, top 15 by ATR%, max 5 positions, Rs225k/trade
-#   ALPHA: 20-stock universe, top 10 by ATR%, max 6 positions, Rs150k/trade
-#   Same stock CAN be held by both simultaneously (independent pools).
+# HOW TO START EACH MORNING:
+#   GitHub → Actions tab → "Intraday Trading Bot — ORB" → "Run workflow"
+#   (no inputs required — just click the green button at 09:10 IST)
 # -----------------------------------------------------------------------
 
 on:
-  workflow_dispatch:           # Manual trigger only — start from GitHub Actions UI each morning
-    inputs:
-      strategy:
-        description: "Single strategy override (leave blank for default parallel run: ORB + ALPHA_COMBO)"
-        required: false
-        default: ""
+  workflow_dispatch:    # One-click manual trigger — no inputs needed
 
-# -----------------------------------------------------------------------
-# Concurrency: only ONE run of this workflow at a time.
-# If a second run starts (e.g. manual trigger while cron is already live),
-# the NEW run is cancelled immediately — the already-running bot continues.
-# -----------------------------------------------------------------------
+# Only one run at a time. If triggered twice, the second run is cancelled.
 concurrency:
   group: trading-bot
-  cancel-in-progress: false   # Cancel the NEW run, keep the existing one
+  cancel-in-progress: false   # Keep the already-running bot; cancel the duplicate
 
-# -----------------------------------------------------------------------
-# Permissions: grant write access so the bot can push performance logs
-# back to the repository after each session.
-# -----------------------------------------------------------------------
+# Write access so the bot can push performance logs back after each session.
 permissions:
   contents: write
 
 jobs:
   trade:
-    name: Run Trading Bot
+    name: ORB Strategy — Live Trading
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
-    timeout-minutes: 360    # GitHub hard-caps hosted runners at 6 hours; trigger at 09:10 IST → covers until 15:10 IST square-off
+    timeout-minutes: 360    # GitHub hard cap is 6 hours — trigger at 09:10 IST to cover until 15:10 IST
 
     steps:
-      # 1. Checkout code
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Set up Python
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
-      # 3. Install dependencies
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # 4. Run both strategies in parallel
-      #    ORB:         1.5× position size, fires 09:30–11:00 IST breakouts
-      #    ALPHA_COMBO: 1.0× position size, fires 09:20–13:00 IST IC-weighted signals
-      #    Each has its own TradeTracker and log file — no shared state.
-      #    If workflow_dispatch overrides strategy, run only that single strategy.
-      - name: Run trading strategies
+      - name: Run ORB strategy
         env:
           STOCKSDEVELOPER_API_KEY: ${{ secrets.STOCKSDEVELOPER_API_KEY }}
           STOCKSDEVELOPER_ACCOUNT: ${{ secrets.STOCKSDEVELOPER_ACCOUNT }}
+          ACTIVE_STRATEGY: "ORB"
         run: |
-          OVERRIDE="${{ github.event.inputs.strategy }}"
-          if [ -n "$OVERRIDE" ]; then
-            echo "Manual override: running single strategy $OVERRIDE"
-            python main.py --strategy "$OVERRIDE"
-          else
-            echo "Running ORB and ALPHA_COMBO in parallel..."
-            python main.py --strategy ORB &
-            PID_ORB=$!
-            python main.py --strategy ALPHA_COMBO &
-            PID_ALPHA=$!
-            echo "ORB PID=$PID_ORB  ALPHA_COMBO PID=$PID_ALPHA"
-            wait $PID_ORB
-            wait $PID_ALPHA
-            echo "Both strategies completed."
-          fi
+          echo "======================================"
+          echo "  ORB Bot — $(date +'%Y-%m-%d %H:%M')"
+          echo "  NIFTY Regime Filter: ON"
+          echo "  Universe: 32 stocks, top 15 by ATR%"
+          echo "  Position: Rs2,25,000 (1.5× × Rs1,50,000)"
+          echo "  Max positions: 5"
+          echo "  Entry window: 09:30 – 11:00 IST"
+          echo "  Square-off: 15:10 IST"
+          echo "======================================"
+          python main.py --strategy ORB
 
-      # 5. Commit performance logs back to repo
-      #    Runs even if the bot exits early (if: always()) so no data is lost.
-      - name: Save performance logs to repo
+      - name: Save performance log to repo
         if: always()
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add performance_log_ORB.csv performance_log_ALPHA_COMBO.csv \
-                  performance_log.csv 2>/dev/null || true
-          git diff --staged --quiet && echo "No new trades to commit." || \
-            git commit -m "perf: trading log $(date -u '+%Y-%m-%d')" && \
-            git push origin HEAD:${{ github.ref_name }}
+          git add performance_log_ORB.csv 2>/dev/null || true
+          git diff --staged --quiet \
+            && echo "No new trades to commit." \
+            || git commit -m "perf: ORB trading log $(date -u '+%Y-%m-%d')" \
+            && git push origin HEAD:${{ github.ref_name }}
