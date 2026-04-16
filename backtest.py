@@ -45,6 +45,9 @@ from config import (
     DAILY_LOSS_CIRCUIT_BREAKER,
     MAX_POSITIONS,
     ONE_TRADE_PER_STOCK_PER_DAY,
+    ORB_MAX_POSITIONS,
+    ORB_STOCK_UNIVERSE,
+    ORB_TOP_N_STOCKS,
     POSITION_SIZE_INR,
     STOCK_UNIVERSE,
     TOP_N_STOCKS,
@@ -145,7 +148,7 @@ def fetch_with_indicators(symbol: str) -> pd.DataFrame | None:
         return None
 
 
-def rank_by_atr(symbol_dfs: dict, date_: datetime.date) -> list[str]:
+def rank_by_atr(symbol_dfs: dict, date_: datetime.date, top_n: int = TOP_N_STOCKS) -> list[str]:
     """Rank symbols by ATR% using daily data prior to backtest date."""
     scores: dict[str, float] = {}
     for symbol, df in symbol_dfs.items():
@@ -173,8 +176,8 @@ def rank_by_atr(symbol_dfs: dict, date_: datetime.date) -> list[str]:
             pass
 
     if not scores:
-        return list(symbol_dfs.keys())[:TOP_N_STOCKS]
-    return sorted(scores, key=lambda s: scores[s], reverse=True)[:TOP_N_STOCKS]
+        return list(symbol_dfs.keys())[:top_n]
+    return sorted(scores, key=lambda s: scores[s], reverse=True)[:top_n]
 
 
 def calculate_quantity(price: float, scale: float = 1.0) -> int:
@@ -185,10 +188,11 @@ def calculate_quantity(price: float, scale: float = 1.0) -> int:
 # Single-day simulation
 # ---------------------------------------------------------------------------
 def simulate_day(
-    date_:      datetime.date,
-    candidates: list[str],
-    symbol_dfs: dict,
-    strategies: list,
+    date_:         datetime.date,
+    candidates:    list[str],
+    symbol_dfs:    dict,
+    strategies:    list,
+    max_positions: int = MAX_POSITIONS,
 ) -> list[BtTrade]:
     """
     Simulate a full trading day candle-by-candle across all candidates.
@@ -290,7 +294,7 @@ def simulate_day(
         # --- Entry checks ---
         # Bug fix #3 (entry): same df_slice boundary — strictly less than ts.
         circuit_tripped = daily_realized_pnl <= DAILY_LOSS_CIRCUIT_BREAKER
-        if len(open_positions) < MAX_POSITIONS and not circuit_tripped:
+        if len(open_positions) < max_positions and not circuit_tripped:
             for symbol in candidates:
                 if len(open_positions) >= MAX_POSITIONS:
                     break
@@ -382,8 +386,8 @@ def print_overall_summary(
     avg_per_day = net / days_tested if days_tested else 0
 
     print(f"  Backtest period  : {days_tested} trading days")
-    print(f"  Universe         : {len(STOCK_UNIVERSE)} stocks (top {TOP_N_STOCKS}/day by ATR%)")
-    print(f"  Capital per trade: Rs{POSITION_SIZE_INR:,.0f} (max {MAX_POSITIONS} simultaneous)")
+    print(f"  Universe         : {len(bt_universe)} stocks (top {bt_top_n}/day by ATR%)")
+    print(f"  Capital per trade: Rs{POSITION_SIZE_INR:,.0f} (max {bt_max_positions} simultaneous)")
     print(sep)
     print(f"  Total trades     : {total}")
     print(f"  Win rate         : {len(wins)}/{total} = {win_rate:.1f}%")
@@ -442,16 +446,23 @@ def run(days: int, strategy_override: str | None = None) -> None:
     strategies     = get_strategies()
     strategy_label = " + ".join(get_strategy_name(s) for s in strategies)
 
+    # Resolve universe, top_n and max_positions based on active strategy
+    active = os.environ.get("ACTIVE_STRATEGY", ACTIVE_STRATEGY).upper()
+    is_orb = (active == "ORB")
+    bt_universe      = ORB_STOCK_UNIVERSE if is_orb else STOCK_UNIVERSE
+    bt_top_n         = ORB_TOP_N_STOCKS   if is_orb else TOP_N_STOCKS
+    bt_max_positions = ORB_MAX_POSITIONS  if is_orb else MAX_POSITIONS
+
     print(f"\n{'=' * 70}")
     print(f"  INTRADAY BACKTEST — last {days} trading days")
     print(f"  Strategy : {strategy_label}")
-    print(f"  Universe : {STOCK_UNIVERSE}")
+    print(f"  Universe : {bt_universe}")
     print(f"{'=' * 70}\n")
 
     # 1. Fetch data + indicators
     logger.info("Fetching 59-day 2-min data (this may take ~1 minute)...")
     symbol_dfs: dict[str, pd.DataFrame] = {}
-    for symbol in STOCK_UNIVERSE:
+    for symbol in bt_universe:
         df = fetch_with_indicators(symbol)
         if df is not None:
             symbol_dfs[symbol] = df
@@ -471,8 +482,9 @@ def run(days: int, strategy_override: str | None = None) -> None:
     print(f"  {'-' * 78}")
 
     for date_ in backtest_dates:
-        candidates  = rank_by_atr(symbol_dfs, date_)
-        day_trades  = simulate_day(date_, candidates, symbol_dfs, strategies)
+        candidates  = rank_by_atr(symbol_dfs, date_, top_n=bt_top_n)
+        day_trades  = simulate_day(date_, candidates, symbol_dfs, strategies,
+                                   max_positions=bt_max_positions)
         all_trades.extend(day_trades)
 
         if day_trades:
