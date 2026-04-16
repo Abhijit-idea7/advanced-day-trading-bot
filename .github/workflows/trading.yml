@@ -1,25 +1,26 @@
 name: Intraday Trading Bot
 
 # -----------------------------------------------------------------------
-# MANUAL TRIGGER ONLY — run this workflow from the GitHub Actions UI
-# each morning before 09:20 IST. The cron schedule was removed because
-# GitHub Actions free-tier runner queue delays (up to 2+ hours on weekday
-# mornings) caused the bot to start as late as 10:50 IST instead of 09:20.
+# MANUAL TRIGGER ONLY — GitHub Actions caps hosted runners at 6 hours
+# (360 minutes) regardless of timeout-minutes. To cover the full trading
+# session including the 15:10 IST square-off:
 #
-# HOW TO START EACH MORNING:
+#   ► TRIGGER THIS WORKFLOW AT EXACTLY 09:10 IST EACH MORNING ◄
+#
+#   09:10 IST + 6 hours = 15:10 IST = square-off time. Perfect fit.
+#   The bot waits internally until 09:20 IST before trading starts.
+#
+# HOW TO START:
 #   GitHub → Actions tab → "Intraday Trading Bot" → "Run workflow" button
-#   Start it any time before 09:20 IST. The bot waits internally until
-#   09:20 IST before selecting candidates and entering trades.
+#   Click at 09:10 IST. Leave the strategy field blank for parallel mode.
 #
 # PARALLEL EXECUTION: ORB and ALPHA_COMBO run as two independent processes:
 #   python main.py --strategy ORB         → performance_log_ORB.csv
 #   python main.py --strategy ALPHA_COMBO → performance_log_ALPHA_COMBO.csv
 #
-#   Each has its own position pool, TradeTracker, and log file.
-#   ORB uses 1.5× position size (Rs225k); ALPHA_COMBO uses 1.0× (Rs150k).
-#   The same stock CAN be traded by both simultaneously.
-#
-# Timeout: 540 minutes — covers up to 9 hours from trigger time.
+#   ORB  : 33-stock universe, top 15 by ATR%, max 5 positions, Rs225k/trade
+#   ALPHA: 20-stock universe, top 10 by ATR%, max 6 positions, Rs150k/trade
+#   Same stock CAN be held by both simultaneously (independent pools).
 # -----------------------------------------------------------------------
 
 on:
@@ -53,7 +54,7 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-    timeout-minutes: 540
+    timeout-minutes: 360    # GitHub hard-caps hosted runners at 6 hours; trigger at 09:10 IST → covers until 15:10 IST square-off
 
     steps:
       # 1. Checkout code
