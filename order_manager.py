@@ -109,5 +109,7 @@ def calculate_quantity(price: float, scale: float = 1.0) -> int:
     """
     if price <= 0:
         return 0
-    effective_capital = POSITION_SIZE_INR * max(0.0, min(scale, 1.0))
+    # scale > 1.0 is intentional for ORB (ORB_POSITION_SCALE = 1.5)
+    # scale < 1.0 is used by ALPHA_COMBO for conviction-proportional sizing
+    effective_capital = POSITION_SIZE_INR * max(0.1, scale)
     return int(effective_capital // price)
