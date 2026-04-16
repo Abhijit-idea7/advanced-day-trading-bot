@@ -16,7 +16,7 @@ import time
 import pandas as pd
 import yfinance as yf
 
-from config import CANDLE_INTERVAL, STOCK_UNIVERSE, TOP_N_STOCKS
+from config import CANDLE_INTERVAL, ORB_STOCK_UNIVERSE, ORB_TOP_N_STOCKS, STOCK_UNIVERSE, TOP_N_STOCKS
 
 logger = logging.getLogger(__name__)
 
@@ -100,15 +100,26 @@ def fetch_daily_candles(symbol: str, period: str = "10d") -> pd.DataFrame | None
         return None
 
 
-def get_top_candidates() -> list[str]:
+def get_top_candidates(
+    universe: list[str] | None = None,
+    top_n:    int | None       = None,
+) -> list[str]:
     """
-    Rank STOCK_UNIVERSE by ATR% (ATR / Close price) using recent daily candles.
-    Returns the top TOP_N_STOCKS symbols — most volatile stocks for today.
-    ATR% normalises across different price levels.
+    Rank universe by ATR% (ATR / Close price) using recent daily candles.
+    Returns the top top_n symbols — most volatile stocks for today.
+
+    universe : stock list to rank (defaults to STOCK_UNIVERSE)
+    top_n    : how many to return (defaults to TOP_N_STOCKS)
+
+    Pass ORB_STOCK_UNIVERSE / ORB_TOP_N_STOCKS from main.py when running
+    the ORB strategy so it scans a larger, gap-optimised set.
     """
+    universe = universe if universe is not None else STOCK_UNIVERSE
+    top_n    = top_n    if top_n    is not None else TOP_N_STOCKS
+
     scores: dict[str, float] = {}
 
-    for symbol in STOCK_UNIVERSE:
+    for symbol in universe:
         df = fetch_daily_candles(symbol, period="10d")
         if df is None or len(df) < 3:
             continue
@@ -127,10 +138,10 @@ def get_top_candidates() -> list[str]:
 
     if not scores:
         logger.warning("Could not score any stocks; falling back to full universe.")
-        return STOCK_UNIVERSE[:TOP_N_STOCKS]
+        return universe[:top_n]
 
     ranked = sorted(scores, key=lambda s: scores[s], reverse=True)
-    top    = ranked[:TOP_N_STOCKS]
-    logger.info(f"Today's top {TOP_N_STOCKS} candidates by ATR%: {top}")
+    top    = ranked[:top_n]
+    logger.info(f"Today's top {top_n} candidates by ATR%: {top}")
     logger.info({s: f"{scores[s]*100:.2f}%" for s in top})
     return top

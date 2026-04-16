@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Stock Universe — High Beta NSE Stocks
+# Stock Universe — ALPHA_COMBO (IC-weighted ensemble, 9:20–13:00 IST)
 # ---------------------------------------------------------------------------
 STOCK_UNIVERSE = [
     # High-beta banking
@@ -38,6 +38,34 @@ STOCK_UNIVERSE = [
     "BANKBARODA", "PNB",
     # High-beta others
     "SUZLON", "HINDCOPPER",
+]
+
+# ---------------------------------------------------------------------------
+# ORB Stock Universe — larger set optimised for gap-and-breakout plays
+# ---------------------------------------------------------------------------
+# ORB works best on stocks that:
+#   1. Have large overnight gaps (reacts to US markets, commodity prices)
+#   2. Have sufficient volume for clean breakouts and fills
+#   3. Exhibit clear opening range structure (not sideways from open)
+# The ATR% ranker picks the top ORB_TOP_N_STOCKS each day from this list.
+ORB_STOCK_UNIVERSE = [
+    # Large-cap banking — most liquid, clean ORB patterns
+    "HDFCBANK", "SBIN", "AXISBANK", "ICICIBANK", "BANKBARODA",
+    "PNB", "INDUSINDBK", "FEDERALBNK",
+    # Financials
+    "BAJFINANCE", "CHOLAFIN",
+    # IT — US market cues drive strong overnight gaps
+    "INFY", "WIPRO", "HCLTECH",
+    # Auto — monthly sales data, commodity input costs create gaps
+    "TATAMOTORS", "M&M", "MARUTI", "BAJAJ-AUTO",
+    # Metals — commodity-driven overnight moves (LME copper/steel)
+    "TATASTEEL", "HINDALCO", "JSWSTEEL", "VEDL", "HINDCOPPER",
+    # Oil & Gas — crude oil prices create sharp gaps
+    "RELIANCE", "ONGC", "BPCL",
+    # Power / Infra — policy-sensitive, gap on news
+    "TATAPOWER", "ADANIGREEN", "ADANIPORTS", "ADANIENT", "NTPC",
+    # High-beta / momentum
+    "SUZLON", "ETERNAL",
 ]
 
 # ---------------------------------------------------------------------------
@@ -144,13 +172,15 @@ POSITION_SIZE_INR = 150_000   # Capital per trade in INR
 # Since brokerage is flat Rs40/trade regardless of size, each trade now
 # earns 1.5× more gross while paying the same Rs40 — improving the ratio.
 
-MAX_POSITIONS     = 6         # Max simultaneous open positions
+MAX_POSITIONS     = 6         # Max simultaneous open positions (ALPHA_COMBO)
+ORB_MAX_POSITIONS = 5         # ORB runs independently — up to 5 concurrent breakout trades
 # Reduced from 10 → 6.  Combined with the higher ALPHA_ENTRY_THRESHOLD,
 # this caps daily trades at ~4–6 rather than always filling 10 slots.
 # Backtest: 300 trades × Rs40 = Rs12,000 brokerage consumed 34% of gross.
 # At ~150 trades: Rs6,000 brokerage on the same-quality gross P&L.
 
-TOP_N_STOCKS      = 10        # Candidates selected daily by ATR%
+TOP_N_STOCKS      = 10        # Candidates selected daily by ATR% (ALPHA_COMBO)
+ORB_TOP_N_STOCKS  = 15        # ORB scans more stocks — breakout setup is selective
 # Reverted to 10 after comparing backtest results.
 # 6-stock version saved Rs4,560 brokerage but lost Rs11,512 gross P&L —
 # a net Rs6,952 worse outcome. Fewer candidates meant missing good trades,

@@ -58,6 +58,9 @@ from config import (
     LOOP_SLEEP_SECONDS,
     MAX_POSITIONS,
     ONE_TRADE_PER_STOCK_PER_DAY,
+    ORB_MAX_POSITIONS,
+    ORB_STOCK_UNIVERSE,
+    ORB_TOP_N_STOCKS,
     SQUARE_OFF_TIME,
     TRADE_START_TIME,
 )
@@ -254,21 +257,22 @@ def square_off_all(
 # ---------------------------------------------------------------------------
 
 def scan_for_entries(
-    candidates:   list[str],
-    tracker:      TradeTracker,
-    closed_today: set,
-    strategies:   list,
-    regime:       dict | None = None,
+    candidates:            list[str],
+    tracker:               TradeTracker,
+    closed_today:          set,
+    strategies:            list,
+    regime:                dict | None = None,
+    max_positions_override: int | None = None,
 ) -> None:
     """
     Check each candidate against all active strategies for a fresh entry signal.
 
-    regime : dict from market_regime.get_nifty_regime() — contains:
-      max_positions    : effective position cap for this loop tick
-      direction_filter : "LONG_ONLY" | "SHORT_ONLY" | "BOTH"
+    regime                 : dict from market_regime.get_nifty_regime()
+    max_positions_override : use strategy-specific cap (e.g. ORB_MAX_POSITIONS)
+                             instead of the regime/config default
     """
     regime            = regime or {}
-    effective_max     = regime.get("max_positions", MAX_POSITIONS)
+    effective_max     = max_positions_override or regime.get("max_positions", MAX_POSITIONS)
     direction_filter  = regime.get("direction_filter", "BOTH")
 
     for symbol in candidates:
@@ -345,18 +349,31 @@ def run() -> None:
 
     strategies = get_strategies()
 
+    # ORB uses its own larger universe and position cap
+    is_orb = (ACTIVE_STRATEGY.upper() == "ORB")
+    effective_max_positions = ORB_MAX_POSITIONS if is_orb else MAX_POSITIONS
+
+    logger.info(f"Max positions   : {effective_max_positions}")
+
     # Wait for trade start (GitHub Actions runner may start 30+ min early)
     while not is_past(TRADE_START_TIME):
         logger.info(f"Waiting for {TRADE_START_TIME} IST... (now {current_time_str()})")
         time.sleep(30)
 
     # Select today's candidates once at session start
+    # ORB scans a larger gap-optimised universe; ALPHA_COMBO uses default
     logger.info("Selecting today's top candidates by ATR%...")
-    candidates = get_top_candidates()
-    logger.info(f"Watchlist: {candidates}")
+    if is_orb:
+        candidates = get_top_candidates(
+            universe=ORB_STOCK_UNIVERSE,
+            top_n=ORB_TOP_N_STOCKS,
+        )
+    else:
+        candidates = get_top_candidates()
+    logger.info(f"Watchlist ({len(candidates)} stocks): {candidates}")
 
     # Strategy-specific log file so parallel processes don't conflict
-    log_file = f"performance_log_{ACTIVE_STRATEGY}.csv"
+    log_file     = f"performance_log_{ACTIVE_STRATEGY}.csv"
     tracker      = TradeTracker()
     perf         = PerformanceTracker(log_file=log_file)
     closed_today: set = set()
@@ -387,7 +404,11 @@ def run() -> None:
 
         # 3. Scan for new entries
         if tracker.can_open_new_trade():
-            scan_for_entries(candidates, tracker, closed_today, strategies, regime=regime)
+            scan_for_entries(
+                candidates, tracker, closed_today, strategies,
+                regime=regime,
+                max_positions_override=effective_max_positions,
+            )
 
         # 4. Log current state
         logger.info(tracker.summary())
