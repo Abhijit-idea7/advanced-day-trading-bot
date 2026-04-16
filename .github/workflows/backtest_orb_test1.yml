@@ -1,0 +1,75 @@
+name: ORB Backtest — Test 1 (Target 1.5x)
+
+# -----------------------------------------------------------------------
+# TEST 1: Reduce ORB target multiplier from 2.5x to 1.5x.
+#
+# HYPOTHESIS: Only 10/150 baseline trades hit the 2.5x target; 75/150
+# closed at SQUARE_OFF. A 1.5x target is reached more often → more
+# clean TARGET exits, faster slot recycling. May also allow re-entry
+# on the same stock earlier in the day.
+#
+# ALL OTHER PARAMS ARE BASELINE (same as live trading config).
+#
+# HOW TO RUN:
+#   GitHub → Actions → "ORB Backtest — Test 1 (Target 1.5x)" → Run workflow
+#
+# COMPARE against baseline result: 150 trades, Rs+68,532 net, Rs+457/trade
+# -----------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Trading days to backtest (1–59, default 30)"
+        required: false
+        default: "30"
+
+jobs:
+  backtest:
+    name: ORB Test 1 — Target 1.5x
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run ORB backtest — Target 1.5x
+        env:
+          STOCKSDEVELOPER_API_KEY: "backtest-dummy-key"
+          STOCKSDEVELOPER_ACCOUNT: "backtest"
+          ACTIVE_STRATEGY: "ORB"
+          # ── Test 1 change ──────────────────────────────────────────
+          ORB_TARGET_MULTIPLIER: "1.5"   # reduced from 2.5 (baseline)
+          # ── All other params at baseline ───────────────────────────
+          ORB_MINUTES: "15"
+          ORB_ENTRY_CUTOFF_TIME: "11:00"
+          ORB_FAILED_BUFFER_PCT: "0.008"
+        run: |
+          echo "=== ORB BACKTEST TEST 1 ==="
+          echo "ORB_TARGET_MULTIPLIER : 1.5  (baseline: 2.5)"
+          echo "ORB_MINUTES           : 15   (unchanged)"
+          echo "ORB_ENTRY_CUTOFF_TIME : 11:00 (unchanged)"
+          echo "ORB_FAILED_BUFFER_PCT : 0.008 (unchanged)"
+          echo "=========================================="
+          python backtest.py \
+            --strategy ORB \
+            --days "${{ github.event.inputs.days }}"
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: orb-test1-target1.5x-${{ github.event.inputs.days }}d
+          path: backtest_results.csv
+          retention-days: 30

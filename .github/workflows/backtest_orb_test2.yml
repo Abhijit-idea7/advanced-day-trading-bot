@@ -1,0 +1,81 @@
+name: ORB Backtest — Test 2 (Range 5min + Cutoff 12:00 + Tighter Buffer)
+
+# -----------------------------------------------------------------------
+# TEST 2: Three changes combined, target stays at 2.5x (baseline).
+#
+# CHANGE A — ORB_MINUTES 15 → 5:
+#   Opening range defined by first 5 min (9:15–9:19 IST) instead of 15.
+#   Tighter range → more stocks break out cleanly. Earlier entries.
+#
+# CHANGE B — ORB_ENTRY_CUTOFF_TIME 11:00 → 12:00:
+#   Extra hour of scanning captures breakouts driven by global data
+#   at 10:30–11:30 IST (US pre-market, European session opens).
+#   Expect +20–30% more trades.
+#
+# CHANGE C — ORB_FAILED_BUFFER_PCT 0.8% → 0.5%:
+#   Exit failed breakouts faster. 54/150 baseline trades were ORB_FAILED;
+#   tighter buffer = smaller average loss on those exits.
+#
+# HOW TO RUN:
+#   GitHub → Actions → "ORB Backtest — Test 2 ..." → Run workflow
+#
+# COMPARE against baseline result: 150 trades, Rs+68,532 net, Rs+457/trade
+# -----------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Trading days to backtest (1–59, default 30)"
+        required: false
+        default: "30"
+
+jobs:
+  backtest:
+    name: ORB Test 2 — Range 5min + Cutoff 12:00 + Buffer 0.5%
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run ORB backtest — Range 5min + Cutoff 12:00 + Buffer 0.5%
+        env:
+          STOCKSDEVELOPER_API_KEY: "backtest-dummy-key"
+          STOCKSDEVELOPER_ACCOUNT: "backtest"
+          ACTIVE_STRATEGY: "ORB"
+          # ── Test 2 changes ─────────────────────────────────────────
+          ORB_MINUTES: "5"              # reduced from 15 (baseline)
+          ORB_ENTRY_CUTOFF_TIME: "12:00" # extended from 11:00 (baseline)
+          ORB_FAILED_BUFFER_PCT: "0.005" # tightened from 0.008 (baseline)
+          # ── Target stays at baseline ───────────────────────────────
+          ORB_TARGET_MULTIPLIER: "2.5"
+        run: |
+          echo "=== ORB BACKTEST TEST 2 ==="
+          echo "ORB_MINUTES           : 5     (baseline: 15)"
+          echo "ORB_ENTRY_CUTOFF_TIME : 12:00 (baseline: 11:00)"
+          echo "ORB_FAILED_BUFFER_PCT : 0.005 (baseline: 0.008)"
+          echo "ORB_TARGET_MULTIPLIER : 2.5   (unchanged)"
+          echo "=========================================="
+          python backtest.py \
+            --strategy ORB \
+            --days "${{ github.event.inputs.days }}"
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: orb-test2-range5m-cutoff12-buffer0.5-${{ github.event.inputs.days }}d
+          path: backtest_results.csv
+          retention-days: 30
