@@ -352,9 +352,12 @@ def simulate_day(
 # Reporting
 # ---------------------------------------------------------------------------
 def print_overall_summary(
-    all_trades: list[BtTrade],
-    days_tested: int,
+    all_trades:     list[BtTrade],
+    days_tested:    int,
     strategy_label: str,
+    universe:       list,
+    top_n:          int,
+    max_pos:        int,
 ) -> None:
     sep = "=" * 70
     print(f"\n{sep}")
@@ -386,8 +389,8 @@ def print_overall_summary(
     avg_per_day = net / days_tested if days_tested else 0
 
     print(f"  Backtest period  : {days_tested} trading days")
-    print(f"  Universe         : {len(bt_universe)} stocks (top {bt_top_n}/day by ATR%)")
-    print(f"  Capital per trade: Rs{POSITION_SIZE_INR:,.0f} (max {bt_max_positions} simultaneous)")
+    print(f"  Universe         : {len(universe)} stocks (top {top_n}/day by ATR%)")
+    print(f"  Capital per trade: Rs{POSITION_SIZE_INR:,.0f} (max {max_pos} simultaneous)")
     print(sep)
     print(f"  Total trades     : {total}")
     print(f"  Win rate         : {len(wins)}/{total} = {win_rate:.1f}%")
@@ -501,7 +504,10 @@ def run(days: int, strategy_override: str | None = None) -> None:
             print(f"  {str(date_):12s}  {'—':>6}  {'—':>4}  {'—':>6}  {'—':>5}  {'Rs0':>12}  {'Rs0':>12}")
 
     # 4. Summary + CSV
-    print_overall_summary(all_trades, len(backtest_dates), strategy_label)
+    print_overall_summary(
+        all_trades, len(backtest_dates), strategy_label,
+        universe=bt_universe, top_n=bt_top_n, max_pos=bt_max_positions,
+    )
     save_to_csv(all_trades)
 
 
